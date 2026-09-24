@@ -24,6 +24,10 @@ import {
 	ARCHIVE_SCHEMA,
 	ARCHIVE_TOTALS_SQL,
 	REQUEST_ID_BACKFILL_LIMIT,
+	buildCoverageDeleteQuery,
+	buildCoverageGroupQuery,
+	buildCoverageInsert,
+	buildCoverageQuery,
 	buildGroupsQuery,
 	buildInsertSql,
 	buildPageQuery,
@@ -32,16 +36,20 @@ import {
 	buildRequestIdBackfillStateWrite,
 	buildRequestIdBackfillUpdate,
 	maxSeqOf,
+	mergeCoverage,
 	planRequestIdBackfill,
 	rowToBackfillWatermark,
 	rowToMaxSeq,
 	rowToTotals,
 	rowsToBackfillCandidates,
+	rowsToCoverage,
+	rowsToCoverageByGroup,
 	rowsToGroups,
 	rowsToPage,
 	rowsToSeries,
 	buildSeriesQuery,
 	toArchiveParams,
+	toCoverageParams,
 	toRequestIdBackfillParams,
 	type ArchiveCursor,
 	type ArchiveGroupRow,
@@ -50,6 +58,8 @@ import {
 	type ArchiveSeriesRow,
 	type ArchiveParam,
 	type ArchiveTotals,
+	type CoverageEntry,
+	type CoverageInterval,
 } from './archive-sql';
 
 /** Package name of the optional DuckDB driver. */
@@ -438,6 +448,69 @@ export class LogArchive {
 			const { sql, params } = buildGroupsQuery(region);
 			const result = await connection.runAndReadAll(sql, params);
 			return rowsToGroups(result.getRowObjects());
+		});
+	}
+
+	/**
+	 * The ranges this archive is known to hold, per log group, within a window.
+	 *
+	 * Coverage is what makes a historic view able to read from the archive
+	 * instead of CloudWatch: it says which ranges watch-tail has already queried
+	 * and archived, so the request only has to ask AWS for the rest. An
+	 * unavailable archive answers an empty map, which sends the caller back to
+	 * CloudWatch for everything.
+	 */
+	async coverage(
+		region: string,
+		logGroups: readonly string[],
+		start: number,
+		end: number,
+	): Promise<Map<string, CoverageInterval[]>> {
+		return this.#guard(new Map<string, CoverageInterval[]>(), async () => {
+			const connection = this.#connection;
+			if (connection === null) return new Map<string, CoverageInterval[]>();
+			const { sql, params } = buildCoverageQuery(region, logGroups, start, end);
+			const result = await connection.runAndReadAll(sql, params);
+			return rowsToCoverageByGroup(result.getRowObjects());
+		});
+	}
+
+	/**
+	 * Records the ranges a scan actually queried, merging them into what is known.
+	 *
+	 * One statement per group rewrites that group's intervals: the existing rows
+	 * are merged with the new ranges in JavaScript (which is where the adjacency
+	 * and overlap rules live) and written back as a small set. The archive is
+	 * single-writer, so this is serialised with the streams that are writing log
+	 * rows, and a failure is reported on `error` without interrupting a view.
+	 */
+	async recordCoverage(region: string, entries: readonly CoverageEntry[]): Promise<void> {
+		if (entries.length === 0) return;
+		await this.#guard<void>(undefined, async () => {
+			const connection = this.#connection;
+			if (connection === null) return;
+			const byGroup = new Map<string, CoverageInterval[]>();
+			for (const entry of entries) {
+				const list = byGroup.get(entry.logGroup);
+				if (list === undefined)
+					byGroup.set(entry.logGroup, [{ start: entry.start, end: entry.end }]);
+				else list.push({ start: entry.start, end: entry.end });
+			}
+			for (const [logGroup, intervals] of byGroup) {
+				const query = buildCoverageGroupQuery(region, logGroup);
+				const existing = await connection.runAndReadAll(query.sql, query.params);
+				const known = mergeCoverage(rowsToCoverage(existing.getRowObjects()));
+				const merged = mergeCoverage([...known, ...intervals]);
+				const removal = buildCoverageDeleteQuery(region, logGroup);
+				await connection.run(removal.sql, removal.params);
+				for (let start = 0; start < merged.length; start += ARCHIVE_INSERT_CHUNK) {
+					const chunk = merged.slice(start, start + ARCHIVE_INSERT_CHUNK);
+					await connection.run(
+						buildCoverageInsert(chunk.length),
+						toCoverageParams(region, logGroup, chunk),
+					);
+				}
+			}
 		});
 	}
 

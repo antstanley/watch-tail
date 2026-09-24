@@ -9,7 +9,15 @@ import { describeAwsError } from './aws';
 
 /** One value produced by {@link tailLogEvents}. */
 export type TailBatch =
-	| { type: 'events'; events: LogEventDto[] }
+	| {
+			type: 'events';
+			events: LogEventDto[];
+			/**
+			 * Where the events came from. CloudWatch batches are archived as they
+			 * stream; archive batches are not written back. Absent means CloudWatch.
+			 */
+			origin?: 'archive' | 'cloudwatch';
+	  }
 	| { type: 'error'; message: string; code?: string }
 	| { type: 'end'; reason: TailEndReason };
 
@@ -40,6 +48,15 @@ export type TailOptions = {
 	idlePolls?: number;
 	/** Maximum events to yield before stopping (default 10000). */
 	maxEvents?: number;
+	/**
+	 * Called after every successful poll with the range that poll covered.
+	 *
+	 * CloudWatch is queried from the last cursor up to the window end (or now, for
+	 * a live tail), so this is what a caller records as archive coverage: a range
+	 * that was actually read, not one that merely looked read. A failed or aborted
+	 * poll never calls it.
+	 */
+	onPoll?: (start: number, end: number) => void;
 };
 
 const DEFAULT_SEEN_CAPACITY = 5000;
@@ -191,6 +208,7 @@ export async function* tailLogEvents(options: TailOptions): AsyncGenerator<TailB
 		endTime = null,
 		idlePolls = DEFAULT_IDLE_POLLS,
 		maxEvents = DEFAULT_MAX_EVENTS,
+		onPoll,
 	} = options;
 
 	// A bounded window turns the endless poll loop into a finite scan.
@@ -241,11 +259,14 @@ export async function* tailLogEvents(options: TailOptions): AsyncGenerator<TailB
 		if (isAborted()) return;
 		try {
 			// A fresh input per poll keeps recorded commands free of shared state.
+			const coveredFrom = cursor;
 			const input: FilterLogEventsCommandInput = { ...baseInput, startTime: cursor };
 			const response = await client.send(new FilterLogEventsCommand(input), {
 				abortSignal: signal,
 			});
 			consecutiveErrors = 0;
+			// The poll read everything from the cursor to the window end (or to now).
+			onPoll?.(coveredFrom, windowEnd ?? Date.now());
 			const events = selectNewEvents(response.events, seen);
 			if (events.length > 0) {
 				emptyPolls = 0;

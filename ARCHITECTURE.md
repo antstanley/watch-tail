@@ -56,6 +56,11 @@ Local history (optional, `source=archive`):
 | `scripts/seed-floci.ts`                       | Demo log groups, backfill and live traffic                           |
 | `scripts/dev.ts`                              | Launcher: choose an AWS profile (`--profile`) or run local           |
 | `scripts/ui-smoke.ts`                         | Playwright smoke check of the log window                             |
+| `src/cli/mcp/run.ts`                          | `watch-tail mcp` lifecycle and `mcp init` orchestration              |
+| `src/cli/mcp/tools.ts`                        | MCP tool catalogue, valibot schemas and request mapping              |
+| `src/cli/mcp/backend.ts`                      | HTTP client and SSE reader behind the MCP tools                      |
+| `src/cli/mcp/stdio.ts`                        | Newline JSON-RPC loop that drives tmcp's server                      |
+| `src/cli/mcp/agents.ts`                       | Agent registry, detection and config merging                         |
 
 ## HTTP API
 
@@ -157,6 +162,10 @@ A historic request sets `endTime` on every `FilterLogEvents` call and ends by it
 `event-limit` after 10 000 events, or with `repeated-errors` after eight failed polls. Live requests
 never end on their own - only a disconnected client stops them (`client-disconnected`).
 
+A historic `source=cloudwatch` request first reads whatever the archive already holds and only scans
+CloudWatch for the gaps (see [Historic CloudWatch views read the archive first](#historic-cloudwatch-views-read-the-archive-first));
+a `filterPattern` keeps the request entirely on CloudWatch.
+
 Events:
 
 | SSE event | Payload                                         |
@@ -216,6 +225,30 @@ stored per region.
 without contacting AWS. Each group carries `archivedEvents`, `archivedOldest` and `archivedNewest`;
 `endpoint` is `null` and `source` is `archive`.
 
+### Historic CloudWatch views read the archive first
+
+The archive is not only a separate `source`: a **historic** view on `source=cloudwatch` (the
+default) answers from the archive wherever it already holds the window, and only calls AWS for the
+gaps. The archive holds only what was streamed, so the boundary is not a single watermark - a
+watermark would skip the periods watch-tail was not running - but the **coverage** recorded in
+`archive_coverage`: the ranges watch-tail can prove it queried and archived for a group.
+
+- A scan records coverage only when it can be trusted: a completed, **unfiltered** CloudWatch scan.
+  A `filterPattern` archives a subset of a range, so it is never recorded, and a live tail records
+  each poll that succeeded (via `onPoll` in `tail.ts`) rather than the whole session.
+- On a request, `resolveHybridFeed` intersects the window with each group's coverage: covered ranges
+  are replayed with `tailArchivedEvents`, and the remaining ranges are fetched with `tailLogEvents`
+  and merged by `mergeTails`. A window with no coverage behaves exactly as before (one CloudWatch
+  scan); a fully covered window never constructs a CloudWatch request at all.
+- Replayed rows carry `origin: 'archive'` on their batch, so the pump archives only CloudWatch
+  events and never writes archived rows back.
+- When the scan finishes its window, the ranges it read from CloudWatch are recorded as coverage, so
+  the next view of that window is answered entirely from the archive.
+
+Windows and coverage are clipped to CloudWatch's 14 days, because the gaps are still fetched from
+AWS; the archive can hold ranges older than that, so `source=archive` remains the way to read beyond
+the CloudWatch retention limit.
+
 ### `GET /api/archive`
 
 Reports the file, its size and its contents. This endpoint never fails: an archive that is off, broken
@@ -260,6 +293,12 @@ CREATE TABLE log_events (
 CREATE UNIQUE INDEX log_events_unique ON log_events (region, log_group, event_key);
 CREATE INDEX log_events_time ON log_events (region, log_group, timestamp_ms);
 CREATE TABLE archive_meta (key VARCHAR PRIMARY KEY, value VARCHAR);
+CREATE TABLE archive_coverage (
+	region    VARCHAR NOT NULL,
+	log_group VARCHAR NOT NULL,
+	start_ms  BIGINT  NOT NULL,   -- inclusive
+	end_ms    BIGINT  NOT NULL,   -- inclusive
+);
 ```
 
 `level` and `level_source` are the one inferred pair of columns. CloudWatch has no level field, so the
@@ -337,6 +376,53 @@ Writes re-check STS and never fall back to a cached account after an identity fa
 are retried on subsequent requests. `WATCH_TAIL_ARCHIVE_DIR` overrides the root directory;
 `WATCH_TAIL_ARCHIVE_DB` / `--db` selects one explicit file instead, including legacy archives.
 Legacy files are not migrated because they do not contain account IDs.
+
+## Headless MCP server
+
+`watch-tail mcp` runs watch-tail as a local [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio, so an agent can search CloudWatch and the archive without calling AWS itself.
+The MCP process is a **thin client**: it starts the same built SvelteKit app the browser uses on a
+free loopback port (or attaches to one with `--url`), then proxies the existing HTTP API. That keeps
+`$lib`-aliased server modules out of the compiled CLI and leaves one implementation of every source,
+filter and error mapping.
+
+```
+Agent -- stdio (newline JSON-RPC) --> watch-tail mcp
+                                        |  spawns `node build/index.js` on a free port
+                                        |  GET /api/archive, /api/log-groups, /api/identity
+                                        |  GET /api/series
+                                        |  GET /api/stream  (SSE, source=archive|cloudwatch)
+                                        v
+                                      watch-tail server --> DuckDB archive / CloudWatch Logs
+```
+
+The protocol is handled by [tmcp](https://tmcp.io), which owns revision negotiation, capabilities,
+argument validation and result framing. `src/cli/mcp/tools.ts` only declares the tools and their
+valibot schemas (converted to JSON Schema by `@tmcp/adapter-valibot`), and maps a call onto the
+backend. Both protocol generations work: the session handshake (`2025-06-18` and earlier) and the
+stateless `2026-07-28` revision, where the client names its revision and capabilities in each
+request's `_meta`.
+
+`src/cli/mcp/stdio.ts` is a deliberately small framing loop over `McpServer.receive` instead of
+`@tmcp/transport-stdio`: the official transport calls `process.exit()` itself, which would tear the
+process down before the private watch-tail server it proxies could be stopped gracefully. The loop
+reserves stdout for the protocol; every diagnostic goes to stderr. It also narrows tmcp's
+`initialize` result to the fields the protocol defines, because tmcp spreads the server options it
+was built with into that one response (which leaks its `adapter` instance as `{}`).
+
+`src/cli/mcp/run.ts` owns the lifetime: `runMcpServer` starts the private server (a free port from
+`findFreePort`), waits for health, serves, and stops the server when stdin closes or a signal
+arrives. `runMcpInit` detects installed agents, asks which to configure, and writes each one's
+merge plan. Both take their side effects as arguments, so tests drive them without a process, a
+terminal or a filesystem.
+
+`src/cli/mcp/agents.ts` is the registry of configurable agents (Claude Desktop, Claude Code, Cursor,
+Windsurf, VS Code, Gemini CLI, Codex CLI). Detection is "does this path or binary exist"; planning is
+a pure merge of the current file text. JSON agents keep every other key and only set
+`<serverKey>.watch-tail`; Codex's TOML has its `[mcp_servers.watch-tail]` section replaced or
+appended. A file that cannot be parsed is reported, never overwritten. The written command defaults
+to `npx -y watch-tail@<version> mcp`, so an upgraded package is picked up; `--command`/`--args` point
+it at a local build instead.
 
 ## Several log groups, and the chart
 

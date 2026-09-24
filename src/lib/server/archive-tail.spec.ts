@@ -103,7 +103,7 @@ describe('tailArchivedEvents', () => {
 		const { archive } = fakeArchive([event(0), event(1)]);
 		const batches = await collect(tailArchivedEvents(tailOptions(archive)));
 		expect(batches).toEqual([
-			{ type: 'events', events: [event(0), event(1)] },
+			{ type: 'events', events: [event(0), event(1)], origin: 'archive' },
 			{ type: 'end', reason: 'window-complete' },
 		]);
 	});

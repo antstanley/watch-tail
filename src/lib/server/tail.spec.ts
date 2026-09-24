@@ -562,3 +562,56 @@ describe('historic windows', () => {
 		expect(batches.at(-1)?.type).toBe('events');
 	});
 });
+
+describe('tailLogEvents coverage reporting', () => {
+	test('reports the range each historic poll covered', async () => {
+		const { client } = queueClient([{ events: [event('a', 1_000)] }]);
+		const polls: [number, number][] = [];
+		await collect(
+			{
+				client,
+				logGroupName: GROUP,
+				startTime: 0,
+				endTime: 5_000,
+				onPoll: (start, end) => polls.push([start, end]),
+			},
+			(collected) => collected.some((batch) => batch.type === 'end'),
+		);
+		expect(polls[0]).toEqual([0, 5_000]);
+	});
+
+	test('a live poll reports up to now', async () => {
+		const before = Date.now();
+		const { client } = queueClient([{ events: [event('a', 1_000)] }]);
+		const polls: [number, number][] = [];
+		await collect(
+			{
+				client,
+				logGroupName: GROUP,
+				startTime: 0,
+				onPoll: (start, end) => polls.push([start, end]),
+			},
+			(collected) => collected.length >= 1,
+		);
+		const [start, end] = polls[0];
+		expect(start).toBe(0);
+		expect(end).toBeGreaterThanOrEqual(before);
+	});
+
+	test('a failed poll never reports coverage', async () => {
+		const { client } = queueClient([new Error('boom')]);
+		const polls: [number, number][] = [];
+		await collect(
+			{
+				client,
+				logGroupName: GROUP,
+				startTime: 0,
+				endTime: 5_000,
+				maxConsecutiveErrors: 1,
+				onPoll: (start, end) => polls.push([start, end]),
+			},
+			(collected) => collected.some((batch) => batch.type === 'end'),
+		);
+		expect(polls).toEqual([]);
+	});
+});

@@ -49,6 +49,9 @@ whole UI, including the log view, and is remembered in this browser.
   and resizable sidebar, timestamp, group-name and stream-name columns (drag their edges or use arrow keys). The viewer keeps a 5,000-line buffer.
 - **Offline history.** Streamed events are saved to a local DuckDB archive. Browse them later without
   AWS credentials, or query them with SQL.
+- **Archive-first historic views.** A historic window reads events the archive already holds and only
+  asks CloudWatch for the gaps, so re-investigating an incident is fast and uses less AWS. A
+  CloudWatch **filter pattern** keeps that view on the API.
 - **Reopen the same view.** Region, groups, source, mode, and time window live in the URL. A teammate
   needs their own AWS access or a copy of the archive; the link does not include logs or credentials.
 
@@ -81,6 +84,13 @@ Only events with request IDs contribute; incomplete windows can show partial dur
 Choose **Local archive** to browse events already captured on this machine, even offline or with an
 expired SSO session. Only events received while streaming are archived; it does not back up your
 whole AWS account.
+
+Historic views do not need you to switch source: with **CloudWatch** selected, a historic window is
+answered from the archive wherever it already has the events, and only the ranges it has never seen
+are fetched from AWS. watch-tail remembers which ranges it streamed (an unfiltered scan that ran to
+completion, or a live tail's successful polls), so a window you looked at before is fast and cheap
+the next time. A **filter pattern** disables this, because that scan archived only the matching
+lines. **Local archive** stays the way to read windows older than CloudWatch's 14-day limit.
 
 ```bash
 watch-tail --db ./logs.duckdb   # choose an archive file
@@ -121,6 +131,47 @@ ORDER BY events DESC;
 CloudWatch scans in this app are limited to the last 14 days; actual AWS retention depends on the
 log group's settings. The local archive can retain events beyond that window.
 
+## Agents (MCP)
+
+watch-tail can run headless as a local [MCP](https://modelcontextprotocol.io) server, so an agent
+can search CloudWatch and the local archive directly instead of calling AWS itself. The server
+starts a private watch-tail on a free loopback port, proxies the same API the browser uses, and
+stops it when the agent disconnects. Nothing is written to stdout except the protocol.
+
+```bash
+watch-tail mcp          # speak MCP over stdio (an agent starts this for you)
+watch-tail mcp init     # detect installed agents and configure them
+```
+
+`mcp init` looks for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI and the
+Codex CLI, lists the ones it finds, and asks which to configure. It merges a `watch-tail` server
+entry into each selected agent's config file, leaving everything else in the file alone, and never
+clobbers a file it cannot parse. Useful flags:
+
+| Flag                 | Meaning                                                             |
+| -------------------- | ------------------------------------------------------------------- |
+| `--agent <ids>`      | Configure these agents (comma separated), skipping detection/prompt |
+| `--yes`              | Configure every detected agent without asking                       |
+| `--print`            | Show the configuration instead of writing it                        |
+| `--scope <scope>`    | `user` (default) or `project` (the current directory)               |
+| `--command`/`--args` | Run a local build instead of the published package                  |
+
+For a checkout rather than an installed package:
+
+```bash
+watch-tail mcp init --command node --args /path/to/watch-tail/dist/cli/bin.js
+```
+
+The agent gets five tools: `archive_status`, `list_log_groups`, `search_logs`, `count_logs` and
+`get_identity`. Every search is a bounded historic window, matching the UI's Historic mode, and
+`source="cloudwatch"` is the default: it reads the local DuckDB archive first and only calls AWS for
+windows it does not already hold, so it is fast and complete. Use `source="archive"` to stay entirely
+on this machine - no AWS calls, and no 14-day limit. `search_logs` accepts a substring (`search`) and
+level filters on the archive, or a CloudWatch `filterPattern`. Searching does not silently pull your
+whole history: only the windows you ask for are archived, and only the events actually streamed.
+The server speaks the Model Context Protocol through [tmcp](https://tmcp.io): the session handshake
+(`2025-06-18` and earlier) and the stateless `2026-07-28` revision with per-request metadata.
+
 ## CLI
 
 ```
@@ -140,6 +191,16 @@ watch-tail [options]
       --no-archive       Do not keep a local history archive
   -h, --help             Show this help
   -v, --version          Show the version
+
+  watch-tail mcp [options]        Serve watch-tail to an AI agent over stdio
+      --url <url>         Use a watch-tail already running at this URL
+  watch-tail mcp init [options]   Write watch-tail into installed agents
+      --agent <ids>       Configure these agents (comma separated)
+      --yes               Configure every detected agent without asking
+      --print             Print the configuration instead of writing it
+      --scope <scope>     Where to write: user (default) or project
+      --command <exe>     Executable written into the agent config (default: npx)
+      --args <args>       Arguments written before `mcp`
 ```
 
 Shell completions support zsh, bash, fish, and PowerShell, including your AWS profile names and

@@ -4,6 +4,7 @@ import { apiError } from '$lib/server/api';
 import { registerLiveStream } from '$lib/server/live-streams';
 import { getArchive, type LogArchive } from '$lib/server/archive';
 import { tailArchivedEvents } from '$lib/server/archive-tail';
+import { intersectCoverage, subtractCoverage } from '$lib/server/archive-sql';
 import {
 	REGION_PARAM_HINT,
 	createLogsClient,
@@ -49,14 +50,16 @@ const SSE_HEADERS: Record<string, string> = {
 };
 
 /**
- * Tags every event of one tail with its log group.
+ * Tags every event of one tail with its log group and where it came from.
  *
  * A merged multi-group stream has to say which group each line came from, both
- * for the archive and for the group column in the viewer.
+ * for the archive and for the group column in the viewer. `origin` is what keeps
+ * a mixed archive/CloudWatch view from writing archived rows back.
  */
 async function* taggedEvents(
 	source: AsyncGenerator<TailBatch, void, void>,
 	group: string,
+	origin: 'archive' | 'cloudwatch',
 ): AsyncGenerator<TailBatch, void, void> {
 	for await (const batch of source) {
 		if (batch.type !== 'events') {
@@ -65,7 +68,7 @@ async function* taggedEvents(
 		}
 		const events: LogEventDto[] = [];
 		for (const event of batch.events) events.push({ ...event, group });
-		yield { type: 'events', events };
+		yield { type: 'events', events, origin };
 	}
 }
 
@@ -95,6 +98,21 @@ async function recordBatch(
 	}
 }
 
+/** One group's queried range, ready to be recorded as archive coverage. */
+type CoverageTarget = { logGroup: string; start: number; end: number };
+
+/** What a feed should record as covered when it finishes. */
+type CoveragePlan = {
+	/** Ranges this stream read from CloudWatch. */
+	ranges: CoverageTarget[];
+	/**
+	 * A live tail records each poll as it happens, so its ranges can be saved
+	 * whatever ends the stream. A finite scan only records when it completed its
+	 * window: an interrupted or truncated scan did not cover the whole range.
+	 */
+	onlyWhenComplete?: boolean;
+};
+
 /** One request's event feed plus the resources it owns. */
 type Feed = {
 	/** Region the feed reads, resolved for the response. */
@@ -105,6 +123,8 @@ type Feed = {
 	generator: AsyncGenerator<TailBatch, void, void>;
 	/** Releases what the feed opened; called once, when the stream ends. */
 	release: () => void;
+	/** Ranges to record as archive coverage once the feed finishes. */
+	coverage?: CoveragePlan;
 };
 
 /** Everything {@link resolveFeed} needs to pick a source. */
@@ -150,6 +170,32 @@ function parseBoundedInt(
 }
 
 /**
+ * Creates the CloudWatch Logs client and resolves the region it reads.
+ *
+ * Returns an `apiError` response the route can send unchanged when either step
+ * fails (a missing region is the common case), so both the plain and the hybrid
+ * feed build the client the same way.
+ */
+async function openCloudWatch(
+	config: AwsConfig,
+): Promise<{ client: CloudWatchLogsClient; region: string } | Response> {
+	let client: CloudWatchLogsClient;
+	try {
+		client = createLogsClient(config);
+	} catch (error) {
+		const described = describeAwsError(error);
+		return apiError(502, described.message, described.code);
+	}
+	try {
+		return { client, region: await resolveEffectiveRegion(client, config) };
+	} catch (error) {
+		client.destroy();
+		const described = describeAwsError(error);
+		return apiError(502, described.message, described.code);
+	}
+}
+
+/**
  * Builds the feed for a request.
  *
  * The archive path never creates a CloudWatch client, so browsing history works
@@ -191,21 +237,16 @@ async function resolveFeed(request: FeedRequest): Promise<Feed | Response> {
 		};
 	}
 
-	let client: CloudWatchLogsClient;
-	try {
-		client = createLogsClient(config);
-	} catch (error) {
-		const described = describeAwsError(error);
-		return apiError(502, described.message, described.code);
-	}
-	let region: string;
-	try {
-		region = await resolveEffectiveRegion(client, config);
-	} catch (error) {
-		client.destroy();
-		const described = describeAwsError(error);
-		return apiError(502, described.message, described.code);
-	}
+	const opened = await openCloudWatch(config);
+	if (opened instanceof Response) return opened;
+	const { client, region } = opened;
+
+	// A poll's coverage is what a later view reads from the archive instead of
+	// CloudWatch. It is only trustworthy without a filter pattern, which would
+	// archive a subset of the events the range actually holds.
+	const tracksCoverage = (request.filterPattern ?? '').length === 0;
+	const polled: CoverageTarget[] = [];
+
 	// One group reads one call, so a multi-group view runs a tail per group and
 	// merges them into a single batch stream.
 	const tails = groupNames.map((group) =>
@@ -219,15 +260,105 @@ async function resolveFeed(request: FeedRequest): Promise<Feed | Response> {
 				filterPattern: request.filterPattern,
 				signal,
 				maxConsecutiveErrors: MAX_CONSECUTIVE_ERRORS,
+				// Only a live tail needs per-poll coverage: a finite scan records
+				// its whole window once it completes.
+				...(endTime === null && tracksCoverage
+					? { onPoll: (start: number, end: number) => polled.push({ logGroup: group, start, end }) }
+					: {}),
 			}),
 			group,
+			'cloudwatch',
 		),
 	);
-	return {
+	const feed: Feed = {
 		region,
 		groupNames,
 		generator: mergeTails(tails),
 		release: () => client.destroy(),
+	};
+	if (endTime !== null && tracksCoverage) {
+		feed.coverage = {
+			ranges: groupNames.map((group) => ({ logGroup: group, start: startTime, end: endTime })),
+			onlyWhenComplete: true,
+		};
+	} else if (tracksCoverage) {
+		feed.coverage = { ranges: polled };
+	}
+	return feed;
+}
+
+/**
+ * Builds a historic CloudWatch view that reads the archive wherever it can.
+ *
+ * For each group the window is split against the archive's coverage: ranges the
+ * archive already holds are replayed locally, and only the gaps are fetched from
+ * CloudWatch. That is what makes re-searching a window that was streamed before
+ * fast and offline-first, without ever dropping events the archive never saw -
+ * the gaps are always filled from AWS.
+ *
+ * The CloudWatch gaps are recorded as coverage once the scan completes, so the
+ * next view of the same window is answered entirely from the archive.
+ */
+async function resolveHybridFeed(request: FeedRequest): Promise<Feed | Response> {
+	const { config, env, groupNames, startTime, filterPattern, pollIntervalMs, signal } = request;
+	const end = request.endTime ?? Date.now();
+
+	const opened = await openCloudWatch(config);
+	if (opened instanceof Response) return opened;
+	const { client, region } = opened;
+	// Select the archive with the region the request actually reads, which the
+	// client resolves from the profile when no region parameter was given.
+	const archive: LogArchive = await getArchive(env, { region, readOnly: true });
+
+	const coverage = await archive.coverage(region, groupNames, startTime, end);
+	const generators: AsyncGenerator<TailBatch, void, void>[] = [];
+	const targets: CoverageTarget[] = [];
+
+	for (const group of groupNames) {
+		const intervals = coverage.get(group) ?? [];
+		for (const covered of intersectCoverage(startTime, end, intervals)) {
+			generators.push(
+				taggedEvents(
+					tailArchivedEvents({
+						archive,
+						region,
+						logGroups: [group],
+						startTime: covered.start,
+						endTime: covered.end,
+						signal,
+					}),
+					group,
+					'archive',
+				),
+			);
+		}
+		for (const gap of subtractCoverage(startTime, end, intervals)) {
+			generators.push(
+				taggedEvents(
+					tailLogEvents({
+						client,
+						logGroupName: group,
+						startTime: gap.start,
+						endTime: gap.end,
+						pollIntervalMs,
+						filterPattern,
+						signal,
+						maxConsecutiveErrors: MAX_CONSECUTIVE_ERRORS,
+					}),
+					group,
+					'cloudwatch',
+				),
+			);
+			targets.push({ logGroup: group, start: gap.start, end: gap.end });
+		}
+	}
+
+	return {
+		region,
+		groupNames,
+		generator: mergeTails(generators),
+		release: () => client.destroy(),
+		coverage: { ranges: targets, onlyWhenComplete: true },
 	};
 }
 
@@ -294,7 +425,14 @@ export const GET = async ({ url, request }: RequestEvent): Promise<Response> => 
 	}
 
 	const bodyAbort = new AbortController();
-	const feed = await resolveFeed({
+	// A historic CloudWatch view reads the archive wherever it is already held and
+	// only calls AWS for the gaps. A filter pattern rules it out: it archives a
+	// subset of a range, so the archive cannot answer the range on its own.
+	const hybrid =
+		source === 'cloudwatch' &&
+		streamWindow.mode === 'historic' &&
+		(filterPattern ?? '').length === 0;
+	const feedRequest: FeedRequest = {
 		source,
 		config,
 		env,
@@ -308,7 +446,8 @@ export const GET = async ({ url, request }: RequestEvent): Promise<Response> => 
 		maxEvents: parseBoundedInt(url.searchParams.get('max'), ARCHIVE_MAX_LIMITS),
 		pollIntervalMs: clampPollMs(url.searchParams.get('poll')),
 		signal: bodyAbort.signal,
-	});
+	};
+	const feed = hybrid ? await resolveHybridFeed(feedRequest) : await resolveFeed(feedRequest);
 	if (feed instanceof Response) return feed;
 
 	// Only the CloudWatch feed writes: reading the archive must not touch it.
@@ -407,8 +546,11 @@ export const GET = async ({ url, request }: RequestEvent): Promise<Response> => 
 					// Archiving is part of the stream: awaiting keeps the order and lets
 					// the archive serialise its own writes. It never throws. A merged
 					// multi-group stream tags each event with its own group, so the rows
-					// land under the right log group.
-					if (archive !== null) await recordBatch(archive, feed.region, feed.groupNames, events);
+					// land under the right log group. Events replayed from the archive
+					// already live there, so they are not written back.
+					if (archive !== null && batch.origin !== 'archive') {
+						await recordBatch(archive, feed.region, feed.groupNames, events);
+					}
 				} else if (batch.type === 'end') {
 					// A finite (historic) window reports why it finished; a live tail
 					// only ends because the client went away.
@@ -424,6 +566,14 @@ export const GET = async ({ url, request }: RequestEvent): Promise<Response> => 
 			if (reason === 'completed') {
 				if (bodyAbort.signal.aborted) reason = 'client-disconnected';
 				else if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) reason = 'repeated-errors';
+			}
+			// Remember what was read from CloudWatch, so the next view of this window
+			// can be answered from the archive. A live tail saves the polls that
+			// succeeded; a finite scan only saves a window it actually finished.
+			if (archive !== null && feed.coverage !== undefined && feed.coverage.ranges.length > 0) {
+				if (feed.coverage.onlyWhenComplete !== true || reason === 'window-complete') {
+					await archive.recordCoverage(feed.region, feed.coverage.ranges);
+				}
 			}
 		} catch (error) {
 			const described = describeAwsError(error);

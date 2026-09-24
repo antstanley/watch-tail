@@ -122,7 +122,9 @@ export async function* tailArchivedEvents(
 			return;
 		}
 		emitted += page.events.length;
-		yield { type: 'events', events: page.events };
+		// `origin` marks these as already archived, so a view that mixes the two
+		// sources never writes them back.
+		yield { type: 'events', events: page.events, origin: 'archive' };
 		cursor = page.last;
 		// A short page or an unusable cursor means there is nothing left to read.
 		if (cursor === null || page.events.length < pageSize) {

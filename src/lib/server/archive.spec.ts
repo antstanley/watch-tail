@@ -966,3 +966,118 @@ describe.skipIf(!driverInstalled)('request ids against a real database file', ()
 		}
 	});
 });
+
+describe('LogArchive coverage', () => {
+	/** Opens an archive whose driver answers coverage reads from `rows`. */
+	async function coverageArchive(
+		rows: Record<string, unknown>[] = [],
+	): Promise<{ archive: LogArchive; fake: ReturnType<typeof fakeDriver> }> {
+		const fake = fakeDriver({
+			respond: (sql) => (sql.includes('FROM archive_coverage') ? rows : []),
+		});
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+		});
+		return { archive, fake };
+	}
+
+	test('reads and merges the coverage of a window', async () => {
+		const { archive } = await coverageArchive([
+			{ log_group: '/g', start_ms: BigInt(10), end_ms: BigInt(20) },
+			{ log_group: '/g', start_ms: BigInt(21), end_ms: BigInt(30) },
+			{ log_group: '/other', start_ms: BigInt(5), end_ms: BigInt(6) },
+		]);
+		const coverage = await archive.coverage('us-east-1', ['/g', '/other'], 0, 100);
+		expect(coverage.get('/g')).toEqual([{ start: 10, end: 30 }]);
+		expect(coverage.get('/other')).toEqual([{ start: 5, end: 6 }]);
+	});
+
+	test('merges new coverage into what the group already had', async () => {
+		const { archive, fake } = await coverageArchive([{ start_ms: BigInt(10), end_ms: BigInt(20) }]);
+		await archive.recordCoverage('us-east-1', [{ logGroup: '/g', start: 21, end: 30 }]);
+
+		const insert = fake.calls.find((call) => call.sql.startsWith('INSERT INTO archive_coverage'));
+		expect(insert?.params).toEqual(['us-east-1', '/g', 10n, 30n]);
+		const removal = fake.calls.find((call) => call.sql.startsWith('DELETE FROM archive_coverage'));
+		expect(removal?.params).toEqual(['us-east-1', '/g']);
+	});
+
+	test('writes the new range when the group had none', async () => {
+		const { archive, fake } = await coverageArchive([]);
+		await archive.recordCoverage('us-east-1', [{ logGroup: '/g', start: 1, end: 2 }]);
+		const insert = fake.calls.find((call) => call.sql.startsWith('INSERT INTO archive_coverage'));
+		expect(insert?.params).toEqual(['us-east-1', '/g', 1n, 2n]);
+	});
+
+	test('does nothing without entries', async () => {
+		const { archive, fake } = await coverageArchive();
+		await archive.recordCoverage('us-east-1', []);
+		const changed = fake.calls.filter(
+			(call) =>
+				call.sql.startsWith('INSERT INTO archive_coverage') ||
+				call.sql.startsWith('DELETE FROM archive_coverage'),
+		);
+		expect(changed).toEqual([]);
+	});
+
+	test('an unavailable archive reports no coverage and swallows a write', async () => {
+		const archive = LogArchive.unavailable('/tmp/archive.duckdb', 'no driver');
+		expect(await archive.coverage('us-east-1', ['/g'], 0, 100)).toEqual(new Map());
+		await expect(
+			archive.recordCoverage('us-east-1', [{ logGroup: '/g', start: 1, end: 2 }]),
+		).resolves.toBeUndefined();
+	});
+});
+
+describe.skipIf(!driverInstalled)('LogArchive coverage against a real database file', () => {
+	test('records, merges and reads coverage per group', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'watch-tail-coverage-'));
+		const path = join(dir, 'archive.duckdb');
+		const archive = await LogArchive.open({ path });
+		try {
+			expect(archive.available).toBe(true);
+
+			await archive.recordCoverage('af-south-1', [
+				{ logGroup: '/aws/lambda/api', start: TS, end: TS + 100 },
+				{ logGroup: '/aws/lambda/api', start: TS + 101, end: TS + 200 },
+				{ logGroup: '/aws/lambda/other', start: TS, end: TS + 50 },
+			]);
+			// Adjacent ranges merge in SQL as well as in the code that plans them.
+			expect(await archive.coverage('af-south-1', ['/aws/lambda/api'], TS, TS + 200)).toEqual(
+				new Map([['/aws/lambda/api', [{ start: TS, end: TS + 200 }]]]),
+			);
+
+			// A later scan that closes the gap leaves one range.
+			await archive.recordCoverage('af-south-1', [
+				{ logGroup: '/aws/lambda/api', start: TS + 200, end: TS + 400 },
+			]);
+			expect(await archive.coverage('af-south-1', ['/aws/lambda/api'], 0, TS + 1000)).toEqual(
+				new Map([['/aws/lambda/api', [{ start: TS, end: TS + 400 }]]]),
+			);
+
+			// The window query clips to what overlaps and keeps groups apart.
+			expect(
+				await archive.coverage(
+					'af-south-1',
+					['/aws/lambda/api', '/aws/lambda/other'],
+					TS + 40,
+					TS + 60,
+				),
+			).toEqual(
+				new Map([
+					['/aws/lambda/api', [{ start: TS, end: TS + 400 }]],
+					['/aws/lambda/other', [{ start: TS, end: TS + 50 }]],
+				]),
+			);
+			// Another region is a different archive slice.
+			expect(await archive.coverage('eu-west-1', ['/aws/lambda/api'], 0, TS + 1000)).toEqual(
+				new Map(),
+			);
+		} finally {
+			await archive.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

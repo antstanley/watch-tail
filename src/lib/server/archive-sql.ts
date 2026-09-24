@@ -61,6 +61,17 @@ export const ARCHIVE_SCHEMA: readonly string[] = [
 	// request-id backfill watermark: the highest `seq` the one-time migration of
 	// pre-column archives has reached, so an interrupted run resumes there.
 	`CREATE TABLE IF NOT EXISTS archive_meta (key VARCHAR PRIMARY KEY, value VARCHAR)`,
+	// The time ranges the archive is known to hold, per log group. A range is
+	// recorded only for an unfiltered CloudWatch scan that ran to completion, so
+	// "covered" means "watch-tail queried CloudWatch over this range", which is
+	// what lets a later view read history from here instead of calling AWS.
+	`CREATE TABLE IF NOT EXISTS archive_coverage (
+		region VARCHAR NOT NULL,
+		log_group VARCHAR NOT NULL,
+		start_ms BIGINT NOT NULL,
+		end_ms BIGINT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS archive_coverage_key ON archive_coverage (region, log_group, start_ms)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS log_events_unique ON log_events (region, log_group, event_key)`,
 	`CREATE INDEX IF NOT EXISTS log_events_time ON log_events (region, log_group, timestamp_ms)`,
 ];
@@ -375,6 +386,175 @@ export function rowsToGroups(rows: readonly Record<string, unknown>[]): ArchiveG
 		});
 	}
 	return groups;
+}
+
+/**
+ * A contiguous range of time the archive is known to hold for one log group.
+ *
+ * `start` and `end` are inclusive epoch milliseconds.
+ */
+export type CoverageInterval = { start: number; end: number };
+
+/** One group's coverage, as used when recording it. */
+export type CoverageEntry = CoverageInterval & { logGroup: string };
+
+/** Drops intervals that are not a usable, ordered range. */
+function isUsableInterval(interval: CoverageInterval): boolean {
+	return (
+		Number.isFinite(interval.start) &&
+		Number.isFinite(interval.end) &&
+		interval.end >= interval.start
+	);
+}
+
+/**
+ * Merges overlapping or adjacent intervals into the fewest ranges.
+ *
+ * Adjacency counts (`next.start === current.end + 1`) so two scans that met
+ * exactly leave one range rather than two, which keeps the table small. The
+ * input is not mutated.
+ */
+export function mergeCoverage(intervals: readonly CoverageInterval[]): CoverageInterval[] {
+	const sorted = intervals
+		.filter(isUsableInterval)
+		.map((interval) => ({ start: interval.start, end: interval.end }))
+		.toSorted((a, b) => a.start - b.start || a.end - b.end);
+	const merged: CoverageInterval[] = [];
+	for (const interval of sorted) {
+		const last = merged.at(-1);
+		if (last !== undefined && interval.start <= last.end + 1) {
+			if (interval.end > last.end) last.end = interval.end;
+		} else {
+			merged.push(interval);
+		}
+	}
+	return merged;
+}
+
+/** The parts of `[start, end]` that `intervals` do cover, clipped to the range. */
+export function intersectCoverage(
+	start: number,
+	end: number,
+	intervals: readonly CoverageInterval[],
+): CoverageInterval[] {
+	const covered: CoverageInterval[] = [];
+	for (const interval of mergeCoverage(intervals)) {
+		const clippedStart = Math.max(start, interval.start);
+		const clippedEnd = Math.min(end, interval.end);
+		if (clippedStart <= clippedEnd) covered.push({ start: clippedStart, end: clippedEnd });
+	}
+	return covered;
+}
+
+/** The parts of `[start, end]` that `intervals` do not cover, in order. */
+export function subtractCoverage(
+	start: number,
+	end: number,
+	intervals: readonly CoverageInterval[],
+): CoverageInterval[] {
+	const uncovered: CoverageInterval[] = [];
+	let cursor = start;
+	for (const interval of mergeCoverage(intervals)) {
+		if (interval.end < cursor) continue;
+		if (interval.start > end) break;
+		if (interval.start > cursor) uncovered.push({ start: cursor, end: interval.start - 1 });
+		cursor = Math.max(cursor, interval.end + 1);
+		if (cursor > end) return uncovered;
+	}
+	if (cursor <= end) uncovered.push({ start: cursor, end });
+	return uncovered;
+}
+
+/** Reads the coverage intervals of several groups that overlap a window. */
+export function buildCoverageQuery(
+	region: string,
+	logGroups: readonly string[],
+	start: number,
+	end: number,
+): { sql: string; params: ArchiveParam[] } {
+	const groups = logGroups.length > 0 ? logGroups : [''];
+	return {
+		sql: `SELECT log_group, start_ms, end_ms FROM archive_coverage WHERE region = ? AND log_group IN (${groups.map(() => '?').join(', ')}) AND end_ms >= ? AND start_ms <= ? ORDER BY log_group, start_ms`,
+		params: [region, ...groups, BigInt(Math.round(start)), BigInt(Math.round(end))],
+	};
+}
+
+/** Maps rows of `start_ms`/`end_ms` onto coverage intervals. */
+export function rowsToCoverage(rows: readonly Record<string, unknown>[]): CoverageInterval[] {
+	const intervals: CoverageInterval[] = [];
+	for (const row of rows) {
+		const start = toNumber(pick(row, 'start_ms'));
+		const end = toNumber(pick(row, 'end_ms'));
+		if (start !== null && end !== null) intervals.push({ start, end });
+	}
+	return intervals;
+}
+
+/** Maps {@link buildCoverageQuery} rows onto merged intervals per log group. */
+export function rowsToCoverageByGroup(
+	rows: readonly Record<string, unknown>[],
+): Map<string, CoverageInterval[]> {
+	const byGroup = new Map<string, CoverageInterval[]>();
+	for (const row of rows) {
+		const group = pick(row, 'log_group');
+		const start = toNumber(pick(row, 'start_ms'));
+		const end = toNumber(pick(row, 'end_ms'));
+		if (typeof group !== 'string' || start === null || end === null) continue;
+		const list = byGroup.get(group);
+		if (list === undefined) byGroup.set(group, [{ start, end }]);
+		else list.push({ start, end });
+	}
+	for (const [group, intervals] of byGroup) byGroup.set(group, mergeCoverage(intervals));
+	return byGroup;
+}
+
+/** Every coverage interval of one group, for a merge-on-write. */
+export function buildCoverageGroupQuery(
+	region: string,
+	logGroup: string,
+): { sql: string; params: ArchiveParam[] } {
+	return {
+		sql: 'SELECT start_ms, end_ms FROM archive_coverage WHERE region = ? AND log_group = ? ORDER BY start_ms',
+		params: [region, logGroup],
+	};
+}
+
+/** Removes every coverage interval of one group, before the merged set is written. */
+export function buildCoverageDeleteQuery(
+	region: string,
+	logGroup: string,
+): { sql: string; params: ArchiveParam[] } {
+	return {
+		sql: 'DELETE FROM archive_coverage WHERE region = ? AND log_group = ?',
+		params: [region, logGroup],
+	};
+}
+
+/** Builds a multi-row insert of coverage intervals. */
+export function buildCoverageInsert(rowCount: number): string {
+	if (!Number.isInteger(rowCount) || rowCount < 1) {
+		throw new RangeError(`rowCount must be a positive integer, received ${String(rowCount)}`);
+	}
+	const row = '(?, ?, ?, ?)';
+	return `INSERT INTO archive_coverage (region, log_group, start_ms, end_ms) VALUES ${Array.from({ length: rowCount }, () => row).join(', ')}`;
+}
+
+/** Flattens merged intervals into the parameters {@link buildCoverageInsert} expects. */
+export function toCoverageParams(
+	region: string,
+	logGroup: string,
+	intervals: readonly CoverageInterval[],
+): ArchiveParam[] {
+	const params: ArchiveParam[] = [];
+	for (const interval of intervals) {
+		params.push(
+			region,
+			logGroup,
+			BigInt(Math.round(interval.start)),
+			BigInt(Math.round(interval.end)),
+		);
+	}
+	return params;
 }
 
 /**
