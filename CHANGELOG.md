@@ -1,5 +1,58 @@
 # watch-tail
 
+## 0.10.0
+
+### Minor Changes
+
+- [#35](https://github.com/antstanley/watch-tail/pull/35) [`72901f9`](https://github.com/antstanley/watch-tail/commit/72901f9818e7620ee9254fc47598806a8cb3cf05) Thanks [@antstanley](https://github.com/antstanley)! - Historic views now prefer the local archive. With **CloudWatch** selected, a historic window reads
+  the events the archive already holds and only asks CloudWatch for the ranges it has never seen, so
+  re-investigating a window is faster and uses less AWS. watch-tail records which ranges it actually
+  read from CloudWatch (following every result page) and stored, so it never skips a period it did
+  not stream: uncovered gaps are always fetched from AWS, and so are the last five minutes of any
+  read, because CloudWatch can still be ingesting them. A range is never recorded when its events
+  could not be written. A CloudWatch historic view now also honours `max` across all its groups. A CloudWatch **filter
+  pattern** keeps a request entirely on the API, because that scan archived only the matching lines,
+  and **Local archive** is still how you read windows older than CloudWatch's 14-day limit.
+
+- [`4a86680`](https://github.com/antstanley/watch-tail/commit/4a866802c0a96a969a75e1507ba502f8140829dc) Thanks [@antstanley](https://github.com/antstanley)! - Add a chevron on the group-list sidebar's edge that folds the sidebar away, giving the logs the full width. The collapsed state is remembered, and a slim rail keeps the control on the seam.
+
+- [#35](https://github.com/antstanley/watch-tail/pull/35) [`72901f9`](https://github.com/antstanley/watch-tail/commit/72901f9818e7620ee9254fc47598806a8cb3cf05) Thanks [@antstanley](https://github.com/antstanley)! - Add a headless **MCP server**, so an agent can search CloudWatch and the local archive directly
+  instead of calling AWS itself. `watch-tail mcp` speaks the Model Context Protocol over stdio (through
+  [tmcp](https://tmcp.io), including the stateless `2026-07-28` revision), starting a private
+  watch-tail on a free loopback port and stopping it when the agent disconnects. It offers
+  `archive_status`, `list_log_groups`, `search_logs`, `count_logs` and `get_identity`. Searches default
+  to `source="cloudwatch"`, which reads the local DuckDB archive first and only calls AWS for the
+  ranges it does not hold; `source="archive"` stays entirely local, with no AWS calls and no 14-day
+  limit. Results come back oldest first, capped by `limit` on either source. The private server
+  releases the archive file between tool calls, so an open agent session does not lock the browser UI
+  out of the archive.
+
+  `watch-tail mcp init` auto-detects installed agents (Claude Desktop, Claude Code, Cursor, Windsurf,
+  VS Code, Gemini CLI and the Codex CLI), lists them, and merges a `watch-tail` server into each
+  selected config without disturbing anything else in the file, including settings you added to the
+  `watch-tail` entry itself (such as an `env`). Files are replaced atomically and keep their
+  permissions. `--yes`, `--agent`, `--scope`,
+  `--print`, `--command` and `--args` cover scripted and local-build setups.
+
+- [`9f5e175`](https://github.com/antstanley/watch-tail/commit/9f5e175dd4366846dde2af0e741852e3358a0c49) Thanks [@antstanley](https://github.com/antstanley)! - Rework the panel layout: the group list, chart and log lines now share a matching header bar, each section collapses from its own header, and the panels tile together with single borders. Folding the log lines away lets the chart grow to fill the space.
+
+- [#34](https://github.com/antstanley/watch-tail/pull/34) [`d35f2c6`](https://github.com/antstanley/watch-tail/commit/d35f2c6abde2ada72c6dee8f541e84a869e223b9) Thanks [@antstanley](https://github.com/antstanley)! - Add a **Puppy** button to the header that brings out a Labrador puppy companion in the bottom-right corner. It wags its tail whenever data loads (log groups, log lines, archive counts) and whenever a section folds or unfolds, and goes away when the button is pressed again. Click the puppy for an excited burst of wagging, and drag it (or use the arrow keys) into any corner of the screen; the corner is remembered.
+
+- [`a8738f6`](https://github.com/antstanley/watch-tail/commit/a8738f6b5d6712cb547b60f115680639801c4e95) Thanks [@antstanley](https://github.com/antstanley)! - Add a persistent **Text size** selector to the header: Small, Default, Large and Extra large scale the whole interface, log view included, for readers who need it larger.
+
+### Patch Changes
+
+- [#37](https://github.com/antstanley/watch-tail/pull/37) [`0cb8a86`](https://github.com/antstanley/watch-tail/commit/0cb8a86a71c5141eeaafab72bccd17e458d208ed) Thanks [@antstanley](https://github.com/antstanley)! - Fix the **Local archive** group list hiding every group name on windows 1280px and wider. The
+  archived time range beside each count now appears only when the group list itself is wide enough
+  for it, and a group name always keeps room in its row.
+
+- [`27fd792`](https://github.com/antstanley/watch-tail/commit/27fd792adc2f502f451cb5045600c9ba3b51eca1) Thanks [@antstanley](https://github.com/antstanley)! - Replace the text glyphs used for controls — chart and log chevrons, the sidebar toggle, and the window range arrow — with Lucide icons.
+
+- [#36](https://github.com/antstanley/watch-tail/pull/36) [`6622897`](https://github.com/antstanley/watch-tail/commit/6622897512e3fc5549f78aa3e79ff191aa459a3c) Thanks [@antstanley](https://github.com/antstanley)! - Refresh the README and its screenshots for the current interface: the reworked panels, chart-point
+  selection, the local archive view, and a new **Make it yours** section covering themes, text size and
+  the puppy companion. The README also introduces the MCP server up front and describes the
+  archive-first coverage rules as they now work.
+
 ## 0.9.0
 
 ### Minor Changes
