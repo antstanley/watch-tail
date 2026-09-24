@@ -85,6 +85,8 @@
 	 * A stored preference wins, so a reader who wants every line keeps every line.
 	 */
 	let groupRequests = $state(true);
+	/** True while the group-list sidebar is open; collapsing gives the logs the full width. */
+	let sidebarOpen = $state(true);
 	/** Bucketed counts behind the chart. */
 	let chartSelection = $state<ChartSelection | null>(null);
 	let seriesBucketMs = $state(60_000);
@@ -138,6 +140,7 @@
 
 	onMount(() => {
 		groupRequests = readPref(STORAGE_KEYS.groupRequests) !== 'false';
+		sidebarOpen = readPref(STORAGE_KEYS.sidebarOpen) !== 'false';
 		void bootstrap();
 		const clampToViewport = (): void => {
 			viewportWidth = window.innerWidth;
@@ -358,6 +361,16 @@
 		groupRequests = !groupRequests;
 		try {
 			localStorage?.setItem(STORAGE_KEYS.groupRequests, groupRequests ? 'true' : 'false');
+		} catch {
+			// A preference is best effort: private mode, quota, no storage.
+		}
+	}
+
+	/** Collapses or expands the group-list sidebar, and remembers the choice. */
+	function toggleSidebar(): void {
+		sidebarOpen = !sidebarOpen;
+		try {
+			localStorage?.setItem(STORAGE_KEYS.sidebarOpen, sidebarOpen ? 'true' : 'false');
 		} catch {
 			// A preference is best effort: private mode, quota, no storage.
 		}
@@ -635,6 +648,20 @@
 	{#if health !== null && health.ok}
 		<span class="text-xs text-emerald-400/80">API ok</span>
 	{/if}
+	<button
+		type="button"
+		onclick={toggleSidebar}
+		aria-expanded={sidebarOpen}
+		aria-controls="log-group-sidebar"
+		title={sidebarOpen
+			? 'Hide the group list, region and source'
+			: 'Show the group list, region and source'}
+		data-testid="sidebar-toggle"
+		class="ml-auto flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-700 hover:text-neutral-100"
+	>
+		<span aria-hidden="true">{sidebarOpen ? '◂' : '▸'}</span>
+		Groups
+	</button>
 </div>
 
 {#if bootError !== null}
@@ -659,36 +686,39 @@
 />
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 lg:flex-row">
-	<div
-		class="flex min-h-0 w-full flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 lg:shrink-0"
-		style={sidebarStyle}
-		data-testid="sidebar"
-	>
-		<SourceControls {source} {archiveAvailable} {archivePath} onChange={changeSource} />
-		<RegionSelect {regions} value={region} onchange={changeRegion} />
-		<LogGroupList
-			{groups}
-			{source}
-			{region}
-			selected={selectedGroups}
-			loading={groupsLoading}
-			error={groupsError}
-			onSelect={selectGroup}
-			onToggle={toggleGroup}
-			onRefresh={refreshGroups}
-		/>
-	</div>
+	{#if sidebarOpen}
+		<div
+			id="log-group-sidebar"
+			class="flex min-h-0 w-full flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 lg:shrink-0"
+			style={sidebarStyle}
+			data-testid="sidebar"
+		>
+			<SourceControls {source} {archiveAvailable} {archivePath} onChange={changeSource} />
+			<RegionSelect {regions} value={region} onchange={changeRegion} />
+			<LogGroupList
+				{groups}
+				{source}
+				{region}
+				selected={selectedGroups}
+				loading={groupsLoading}
+				error={groupsError}
+				onSelect={selectGroup}
+				onToggle={toggleGroup}
+				onRefresh={refreshGroups}
+			/>
+		</div>
 
-	<ColumnResizer
-		label="Resize group list"
-		width={sidebarPx}
-		min={sidebarMinPx}
-		max={sidebarMaxPx}
-		testId="sidebar-resizer"
-		onChange={(next) => (sidebarPx = next)}
-		onCommit={() => saveSidebarWidth()}
-		class="hidden lg:block lg:w-2"
-	/>
+		<ColumnResizer
+			label="Resize group list"
+			width={sidebarPx}
+			min={sidebarMinPx}
+			max={sidebarMaxPx}
+			testId="sidebar-resizer"
+			onChange={(next) => (sidebarPx = next)}
+			onCommit={() => saveSidebarWidth()}
+			class="hidden lg:block lg:w-2"
+		/>
+	{/if}
 
 	<div class="flex min-h-0 min-w-0 flex-1 flex-col">
 		<EventScatterPanel

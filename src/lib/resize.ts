@@ -8,6 +8,7 @@
 /** `localStorage` keys, prefixed so they are easy to spot in a browser. */
 export const STORAGE_KEYS = {
 	sidebarWidth: 'watch-tail:sidebar-width',
+	sidebarOpen: 'watch-tail:sidebar-open',
 	prefixWidth: 'watch-tail:prefix-width',
 	timestampWidth: 'watch-tail:timestamp-width',
 	groupWidth: 'watch-tail:group-width',

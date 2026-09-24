@@ -97,5 +97,6 @@ describe('units and constants', () => {
 		expect(PREFIX_WIDTH.defaultRem).toBe(14);
 		expect(STORAGE_KEYS.prefixWidth).toBe('watch-tail:prefix-width');
 		expect(STORAGE_KEYS.sidebarWidth).toBe('watch-tail:sidebar-width');
+		expect(STORAGE_KEYS.sidebarOpen).toBe('watch-tail:sidebar-open');
 	});
 });

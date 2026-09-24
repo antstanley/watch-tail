@@ -38,7 +38,8 @@ whole UI, including the log view, and is remembered in this browser.
 - **Live tail and historic scans.** Follow new events or select a preset (15 minutes to 5 days) or
   custom window. Pause with buffering, filter text, clear the view, and toggle auto-scroll.
 - **Several groups, one view.** Select groups in the sidebar to merge their logs and chart. A group
-  column keeps each line's source visible.
+  column keeps each line's source visible. Use **Groups** in the toolbar to fold the sidebar away
+  and give the logs the full width; the choice is remembered.
 - **Requests, not just lines.** **By request** groups matching request IDs into one expandable row,
   showing line count, elapsed span, and highest severity. Lines without an ID stay visible.
 - **Spot the spike.** In Historic mode, the chart shows request duration over time, coloured by severity.

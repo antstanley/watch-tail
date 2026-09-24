@@ -168,6 +168,7 @@ beforeEach(() => {
 	requested = [];
 	FakeEventSource.urls = [];
 	mocks.replaceState.mockClear();
+	localStorage.clear();
 	setUrl();
 	vi.stubGlobal('fetch', vi.fn(stubApi));
 	vi.stubGlobal('EventSource', FakeEventSource);
@@ -430,5 +431,39 @@ describe('page: grouping by request', () => {
 			),
 		);
 		expect(screen.getByTestId('group-toggle').getAttribute('aria-pressed')).toBe('false');
+	});
+});
+
+describe('page: collapsible group sidebar', () => {
+	it('collapses and expands the group list', async () => {
+		setUrl('?region=us-east-1&group=/aws/app');
+		await renderPage();
+
+		expect(screen.getByTestId('sidebar')).toBeTruthy();
+		expect(screen.getByTestId('sidebar-resizer')).toBeTruthy();
+		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('true');
+
+		await fireEvent.click(screen.getByTestId('sidebar-toggle'));
+
+		expect(screen.queryByTestId('sidebar')).toBeNull();
+		expect(screen.queryByTestId('sidebar-resizer')).toBeNull();
+		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('false');
+		expect(localStorage.getItem('watch-tail:sidebar-open')).toBe('false');
+
+		await fireEvent.click(screen.getByTestId('sidebar-toggle'));
+		expect(screen.getByTestId('sidebar')).toBeTruthy();
+		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('true');
+		expect(localStorage.getItem('watch-tail:sidebar-open')).toBe('true');
+	});
+
+	it('starts collapsed when the stored preference says so, leaving the log view in place', async () => {
+		localStorage.setItem('watch-tail:sidebar-open', 'false');
+		setUrl('?region=us-east-1&group=/aws/app');
+		await renderPage();
+
+		expect(screen.queryByTestId('sidebar')).toBeNull();
+		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('false');
+		// The log view and its toolbar survive folding the sidebar away.
+		expect(screen.getByTestId('log-scroller')).toBeTruthy();
 	});
 });
