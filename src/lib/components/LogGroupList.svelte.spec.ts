@@ -128,7 +128,16 @@ describe('LogGroupList archive view', () => {
 		expect(screen.getByTestId('group-archived-span').textContent?.trim()).toBe(
 			'2024-01-02T03:04:05.000Z \u2192 2024-01-02T04:05:06.000Z',
 		);
-		expect(screen.getByTestId('group-archived-span').className).toContain('hidden');
+		// It follows the list's width (a container query), not the window's: a wide window with the
+		// default sidebar used to show it and squeeze the group name out of the row.
+		const span = screen.getByTestId('group-archived-span');
+		expect(span.className).toContain('hidden');
+		expect(span.className).toContain('@2xl:inline');
+		expect(span.className).not.toMatch(/(^|\s)xl:inline/);
+		expect(span.closest('ul')?.className).toContain('@container');
+		// The name can shrink, but never to nothing.
+		const name = screen.getAllByTestId('group-row')[0].querySelector('.font-mono');
+		expect(name?.className).toContain('min-w-16');
 		expect(screen.getByTestId('group-source-badge').textContent?.trim()).toBe('local');
 	});
 
