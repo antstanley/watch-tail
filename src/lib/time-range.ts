@@ -90,7 +90,12 @@ export function formatWindowBound(epochMs: number, now: number): string {
 /** What the toolbar chip needs to describe the active window. */
 export type WindowSummary = {
 	mode: LogMode;
-	label: string;
+	/** Preset the window came from, or `null` for a custom range or a live tail. */
+	preset: string | null;
+	/** Formatted start bound, or `null` for a live tail. */
+	from: string | null;
+	/** Formatted end bound, or `null` for a live tail. */
+	to: string | null;
 	title: string;
 	/** True when the server clamped the requested window. */
 	clamped: boolean;
@@ -113,13 +118,22 @@ export function describeWindow(
 	now: number,
 ): WindowSummary {
 	if (ready === null || ready.startTime === undefined) {
-		return { mode: 'live', label: 'live', title: 'Tailing new events', clamped: false };
+		return {
+			mode: 'live',
+			preset: null,
+			from: null,
+			to: null,
+			title: 'Tailing new events',
+			clamped: false,
+		};
 	}
 	const clamped = ready.clamped === true;
 	if (ready.mode !== 'historic' || ready.endTime === null || ready.endTime === undefined) {
 		return {
 			mode: 'live',
-			label: 'live',
+			preset: null,
+			from: null,
+			to: null,
 			title: `Live since ${formatWindowBound(ready.startTime, now)}`,
 			clamped,
 		};
@@ -130,7 +144,9 @@ export function describeWindow(
 		ready.preset === null || ready.preset === undefined ? null : presetLabel(ready.preset);
 	return {
 		mode: 'historic',
-		label: preset === null ? `${from} → ${to}` : `${preset} · ${from} → ${to}`,
+		preset,
+		from,
+		to,
 		title: clamped
 			? 'Historic window, clamped to the last 14 days that CloudWatch Logs keeps'
 			: 'Historic window',

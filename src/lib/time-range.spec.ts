@@ -56,13 +56,19 @@ describe('describeWindow', () => {
 	const now = Date.UTC(2024, 4, 10, 12, 0, 0);
 
 	test('describes a live tail before the ready frame arrives', () => {
-		expect(describeWindow(null, now)).toMatchObject({ mode: 'live', label: 'live' });
+		expect(describeWindow(null, now)).toMatchObject({
+			mode: 'live',
+			preset: null,
+			from: null,
+			to: null,
+		});
 	});
 
 	test('describes a live window with its start time', () => {
 		const summary = describeWindow({ mode: 'live', startTime: now - 60_000, endTime: null }, now);
 		expect(summary.mode).toBe('live');
-		expect(summary.label).toBe('live');
+		expect(summary.from).toBeNull();
+		expect(summary.to).toBeNull();
 		expect(summary.title).toContain('Live since');
 	});
 
@@ -78,8 +84,9 @@ describe('describeWindow', () => {
 			now,
 		);
 		expect(summary.mode).toBe('historic');
-		expect(summary.label).toContain('24 hours');
-		expect(summary.label).toContain('→');
+		expect(summary.preset).toBe('24 hours');
+		expect(summary.from).not.toBeNull();
+		expect(summary.to).not.toBeNull();
 		expect(summary.clamped).toBe(false);
 	});
 
@@ -88,8 +95,9 @@ describe('describeWindow', () => {
 			{ mode: 'historic', startTime: now - 90 * 60 * 1000, endTime: now, preset: null },
 			now,
 		);
-		expect(summary.label).not.toContain('·');
-		expect(summary.label).toContain('→');
+		expect(summary.preset).toBeNull();
+		expect(summary.from).not.toBeNull();
+		expect(summary.to).not.toBeNull();
 	});
 
 	test('flags a clamped window', () => {

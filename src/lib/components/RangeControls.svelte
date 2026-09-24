@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ArrowRight } from '@lucide/svelte';
 	import {
 		fromDateTimeLocal,
 		HISTORIC_PRESETS,
@@ -109,12 +110,12 @@
 		onApply?.({ mode: 'historic', range: '', from: start, to: end });
 	}
 
-	/** Label shown on the custom chip. */
-	let customLabel = $derived(
-		mode === 'historic' && range === '' && from !== null && to !== null
-			? `${toDateTimeLocal(from).replace('T', ' ')} → ${toDateTimeLocal(to).replace('T', ' ')}`
-			: 'Custom…',
-	);
+	/** True when the custom chip stands for an explicit window with both bounds. */
+	let customActive = $derived(mode === 'historic' && range === '' && from !== null && to !== null);
+	/** Start bound on the custom chip, formatted for display. */
+	let customFromLabel = $derived(from === null ? '' : toDateTimeLocal(from).replace('T', ' '));
+	/** End bound on the custom chip, formatted for display. */
+	let customToLabel = $derived(to === null ? '' : toDateTimeLocal(to).replace('T', ' '));
 	/** Shared classes for the segmented buttons. */
 	const chip =
 		'rounded-md border px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50';
@@ -180,7 +181,15 @@
 					? 'border-amber-700 bg-amber-950/50 text-amber-200'
 					: 'border-neutral-800 bg-neutral-900 text-neutral-300 hover:border-neutral-700'}"
 			>
-				{customLabel}
+				{#if customActive}
+					<span class="inline-flex items-center gap-1">
+						<span>{customFromLabel}</span>
+						<ArrowRight size="1em" />
+						<span>{customToLabel}</span>
+					</span>
+				{:else}
+					Custom…
+				{/if}
 			</button>
 		</div>
 	{/if}

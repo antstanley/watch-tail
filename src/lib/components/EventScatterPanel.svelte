@@ -12,6 +12,7 @@
 	import { formatCount } from '$lib/format';
 	import { SERIES_LEVEL_COLOR, groupByLevel } from '$lib/series-buckets';
 	import { STORAGE_KEYS } from '$lib/resize';
+	import { ChevronDown, ChevronRight } from '@lucide/svelte';
 	import type { SeriesPoint, SeriesMetric } from '$lib/types';
 	import type { BrushRange } from './EventScatter.svelte';
 
@@ -175,7 +176,11 @@
 			data-testid="scatter-toggle"
 			class="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-0.5 font-semibold uppercase tracking-wider text-neutral-400 transition-colors hover:border-neutral-700 hover:text-neutral-200"
 		>
-			<span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+			{#if expanded}
+				<ChevronDown size="1em" />
+			{:else}
+				<ChevronRight size="1em" />
+			{/if}
 			{metric === 'duration' ? 'Request duration' : 'Events over time'}
 		</button>
 		<div

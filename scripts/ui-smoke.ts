@@ -547,12 +547,21 @@ async function main(): Promise<number> {
 		await page.click('[data-testid="preset-24h"]');
 		await page.waitForTimeout(1200);
 		const url = page.url();
-		const chip = await page.textContent('[data-testid="window-chip"]').catch(() => null);
+		const chip = await page
+			.evaluate(() => {
+				const element = document.querySelector('[data-testid="window-chip"]');
+				if (element === null) return null;
+				return {
+					text: element.textContent ?? '',
+					arrow: element.querySelector('svg.lucide-arrow-right') !== null,
+				};
+			})
+			.catch(() => null);
 		check(
 			checks,
 			'selecting a preset scopes the window',
-			url.includes('mode=historic') && (chip ?? '').includes('→'),
-			`${new URL(url).search} chip=${chip ?? 'none'}`,
+			url.includes('mode=historic') && chip !== null && chip.arrow,
+			`${new URL(url).search} chip=${chip?.text ?? 'none'}`,
 		);
 
 		await page.click('[data-testid="preset-15m"]');

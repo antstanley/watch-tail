@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
+	import { ArrowRight, ChevronDown, ChevronRight } from '@lucide/svelte';
 	import { selectedChartEvents, type ChartSelection } from '$lib/chart-selection';
 	import ColumnResizer from './ColumnResizer.svelte';
 	import StatusBadge from './StatusBadge.svelte';
@@ -581,14 +582,23 @@
 			</span>
 		{/if}
 		<span
-			class="rounded-full border px-2 py-0.5 text-[0.6875rem] font-medium {windowSummary.mode ===
+			class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.6875rem] font-medium {windowSummary.mode ===
 			'historic'
 				? 'border-amber-900 bg-amber-950/40 text-amber-300'
 				: 'border-neutral-800 bg-neutral-900 text-neutral-400'}"
 			title={windowSummary.title}
 			data-testid="window-chip"
 		>
-			{windowSummary.label}
+			{#if windowSummary.mode === 'live'}
+				<span>live</span>
+			{:else}
+				{#if windowSummary.preset !== null}
+					<span>{windowSummary.preset} ·</span>
+				{/if}
+				<span>{windowSummary.from}</span>
+				<ArrowRight size="1em" />
+				<span>{windowSummary.to}</span>
+			{/if}
 		</span>
 		{#if windowSummary.clamped}
 			<span class="text-[0.6875rem] text-amber-400/80" data-testid="window-clamped">
@@ -814,9 +824,11 @@
 								{row.streamName ?? ''}
 							</span>
 							{#if expandable}
-								<span class="shrink-0 text-neutral-600" aria-hidden="true">
-									{open ? '▾' : '▸'}
-								</span>
+								{#if open}
+									<ChevronDown class="shrink-0 text-neutral-600" size="1em" />
+								{:else}
+									<ChevronRight class="shrink-0 text-neutral-600" size="1em" />
+								{/if}
 							{/if}
 							<span class="{messageClass} {row.levelClass}" data-testid="log-message">
 								{#if row.tokens !== null}
@@ -890,9 +902,11 @@
 									>
 										{row.streamName ?? ''}
 									</span>
-									<span class="shrink-0 text-neutral-600" aria-hidden="true">
-										{open ? '▾' : '▸'}
-									</span>
+									{#if open}
+										<ChevronDown class="shrink-0 text-neutral-600" size="1em" />
+									{:else}
+										<ChevronRight class="shrink-0 text-neutral-600" size="1em" />
+									{/if}
 									<span
 										class="shrink-0 rounded border border-neutral-700 bg-neutral-900 px-1.5 font-mono text-[0.6875rem] text-sky-200"
 										data-testid="request-group-id"

@@ -286,7 +286,8 @@ describe('LogViewer window chip', () => {
 
 		const chip = screen.getByTestId('window-chip');
 		expect(chip.textContent).toContain('1 hour');
-		expect(chip.textContent).toContain('→');
+		// The bounds are joined by an arrow icon, not a text glyph.
+		expect(chip.querySelector('svg.lucide-arrow-right')).toBeTruthy();
 	});
 
 	it('flags a clamped window and a completed scan', () => {

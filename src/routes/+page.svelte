@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { PanelLeft, PanelLeftClose, PanelLeftOpen } from '@lucide/svelte';
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import EndpointBadge from '$lib/components/EndpointBadge.svelte';
@@ -630,7 +631,7 @@
 		data-testid="sidebar-toggle"
 		class="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-700 hover:text-neutral-100 lg:hidden"
 	>
-		<span aria-hidden="true">▤</span>
+		<PanelLeft size="1em" />
 		Groups
 	</button>
 	<span class="text-[0.6875rem] font-semibold uppercase tracking-wider text-neutral-500">
@@ -736,7 +737,11 @@
 			data-testid="sidebar-seam-toggle"
 			class="absolute top-2 left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900 text-[0.6875rem] leading-none text-neutral-400 transition-colors hover:border-sky-600 hover:text-sky-300"
 		>
-			<span aria-hidden="true">{sidebarOpen ? '◂' : '▸'}</span>
+			{#if sidebarOpen}
+				<PanelLeftClose class="size-3.5" />
+			{:else}
+				<PanelLeftOpen class="size-3.5" />
+			{/if}
 		</button>
 	</div>
 
