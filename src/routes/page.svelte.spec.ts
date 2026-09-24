@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Page from './+page.svelte';
+import { puppy } from '$lib/puppy.svelte';
 
 /**
  * Page-level tests for the CloudWatch/archive switch.
@@ -29,24 +30,39 @@ vi.mock('$app/navigation', () => ({
 	replaceState: (url: URL, state: unknown) => mocks.replaceState(url, state),
 }));
 
+type StreamListener = (event: MessageEvent<string>) => void;
+
 /** Minimal `EventSource` double that records the URLs the page opens. */
 class FakeEventSource {
 	static urls: string[] = [];
+	/** The most recent connection, so a test can push server events through it. */
+	static latest: FakeEventSource | null = null;
 
 	readonly url: string;
 	readyState = 0;
+	readonly #listeners = new Map<string, StreamListener[]>();
 
 	constructor(url: string) {
 		this.url = url;
 		FakeEventSource.urls.push(url);
+		FakeEventSource.latest = this;
 	}
 
-	addEventListener(): void {
-		// The page only needs the connection to exist.
+	addEventListener(type: string, listener: StreamListener): void {
+		this.#listeners.set(type, [...(this.#listeners.get(type) ?? []), listener]);
 	}
 
-	removeEventListener(): void {
-		// Nothing to detach in this double.
+	removeEventListener(type: string, listener: StreamListener): void {
+		this.#listeners.set(
+			type,
+			(this.#listeners.get(type) ?? []).filter((entry) => entry !== listener),
+		);
+	}
+
+	/** Delivers a named server-sent event, as the stream route would. */
+	emit(type: string, payload: unknown): void {
+		const event = new MessageEvent(type, { data: JSON.stringify(payload) });
+		for (const listener of this.#listeners.get(type) ?? []) listener(event);
 	}
 
 	close(): void {
@@ -167,6 +183,7 @@ beforeEach(() => {
 	cloudwatchGroups = [{ name: '/aws/app', storedBytes: 2048 }];
 	requested = [];
 	FakeEventSource.urls = [];
+	FakeEventSource.latest = null;
 	mocks.replaceState.mockClear();
 	localStorage.clear();
 	setUrl();
@@ -177,6 +194,8 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	puppy.shown = false;
+	puppy.pulse = 0;
 });
 
 describe('page source switch', () => {
@@ -500,5 +519,44 @@ describe('page: collapsible log lines', () => {
 		expect(screen.getByTestId('log-toggle').getAttribute('aria-expanded')).toBe('false');
 		// Status and counts stay in the header while the lines are folded away.
 		expect(screen.getByTestId('visible-count')).toBeTruthy();
+	});
+});
+
+describe('page: the puppy companion', () => {
+	it('wags when the groups load, when a batch of lines arrives and when a section folds', async () => {
+		puppy.shown = true;
+		setUrl('?region=us-east-1&group=/aws/app');
+		await renderPage();
+		// The group list loading is data arriving.
+		await waitFor(() => expect(puppy.pulse).toBeGreaterThan(0));
+
+		let before = puppy.pulse;
+		FakeEventSource.latest?.emit('log', {
+			events: [{ id: 'e1', timestamp: Date.now(), message: 'hello', streamName: 's' }],
+		});
+		await waitFor(() => expect(puppy.pulse).toBe(before + 1));
+
+		before = puppy.pulse;
+		await fireEvent.click(screen.getByTestId('sidebar-collapse'));
+		expect(puppy.pulse).toBe(before + 1);
+		await fireEvent.click(screen.getByTestId('sidebar-expand'));
+		expect(puppy.pulse).toBe(before + 2);
+		await fireEvent.click(screen.getByTestId('log-toggle'));
+		expect(puppy.pulse).toBe(before + 3);
+	});
+
+	it('stays quiet while it is hidden', async () => {
+		setUrl('?region=us-east-1&group=/aws/app');
+		await renderPage();
+		const stream = FakeEventSource.latest;
+		if (stream === null) throw new Error('the page never opened the stream');
+		stream.emit('log', {
+			events: [{ id: 'e1', timestamp: Date.now(), message: 'hello', streamName: 's' }],
+		});
+		// The line really arrived, so a wag was asked for, and dropped.
+		await waitFor(() => expect(screen.getByText('hello')).toBeTruthy());
+		await fireEvent.click(screen.getByTestId('sidebar-collapse'));
+		await fireEvent.click(screen.getByTestId('log-toggle'));
+		expect(puppy.pulse).toBe(0);
 	});
 });

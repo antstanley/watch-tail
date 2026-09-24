@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from '@lucide/svelte';
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
@@ -25,6 +25,7 @@
 	import type { LogLevel } from '$lib/log-buffer';
 	import { bucketEvents, requestDurations, isMeaningfulBrush } from '$lib/series-buckets';
 	import { LogStream } from '$lib/log-stream.svelte';
+	import { puppy } from '$lib/puppy.svelte';
 	import type { StreamTarget } from '$lib/log-stream.svelte';
 	import type { LogMode } from '$lib/time-range';
 	import { SIDEBAR_WIDTH, STORAGE_KEYS, clampWidth, parseStoredWidth, remToPx } from '$lib/resize';
@@ -239,6 +240,7 @@
 			if (target !== region || requestedSource !== source) return;
 			if (response.endpoint !== null) endpoint = response.endpoint;
 			groups = response.groups;
+			puppy.wag();
 		} catch (error) {
 			if (target !== region || requestedSource !== source) return;
 			groups = [];
@@ -373,6 +375,7 @@
 	/** Collapses or expands the group-list sidebar, and remembers the choice. */
 	function toggleSidebar(): void {
 		sidebarOpen = !sidebarOpen;
+		puppy.wag();
 		try {
 			localStorage?.setItem(STORAGE_KEYS.sidebarOpen, sidebarOpen ? 'true' : 'false');
 		} catch {
@@ -383,6 +386,7 @@
 	/** Collapses or expands the log lines, and remembers the choice. */
 	function toggleLog(): void {
 		logOpen = !logOpen;
+		puppy.wag();
 		try {
 			localStorage?.setItem(STORAGE_KEYS.logOpen, logOpen ? 'true' : 'false');
 		} catch {
@@ -519,6 +523,12 @@
 		void loadSeries();
 	});
 
+	/** Every batch of log lines that arrives gives the puppy (when shown) a wag. */
+	$effect(() => {
+		if (stream.receivedCount === 0) return;
+		untrack(() => puppy.wag());
+	});
+
 	/**
 	 * Reacts to `archive-unavailable` from the stream (the file was locked or removed after boot) by
 	 * re-checking the archive, so the toggle hides itself instead of offering a source that fails.
@@ -618,6 +628,7 @@
 			if (request === seriesRequest) {
 				seriesPoints = series.points;
 				seriesBucketMs = series.bucketMs;
+				puppy.wag();
 			}
 		} catch {
 			// A newer metric/window response wins over this one.

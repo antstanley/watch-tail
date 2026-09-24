@@ -12,6 +12,7 @@
 	import { formatCount } from '$lib/format';
 	import { SERIES_LEVEL_COLOR, groupByLevel } from '$lib/series-buckets';
 	import { STORAGE_KEYS } from '$lib/resize';
+	import { puppy } from '$lib/puppy.svelte';
 	import { ChevronDown, ChevronRight } from '@lucide/svelte';
 	import type { SeriesPoint, SeriesMetric } from '$lib/types';
 	import type { BrushRange } from './EventScatter.svelte';
@@ -135,6 +136,7 @@
 	/** Collapses or expands the panel and remembers the choice. */
 	function toggle(): void {
 		expandedChoice = !expanded;
+		puppy.wag();
 		try {
 			localStorage?.setItem(STORAGE_KEYS.chartOpen, expanded ? '1' : '0');
 		} catch {

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/sv
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LogLevel } from '$lib/log-buffer';
 import LogViewer from './LogViewer.svelte';
+import { puppy } from '$lib/puppy.svelte';
 import type { LogEventDto } from '$lib/types';
 
 // Auto-cleanup only runs when vitest globals are enabled, which they are not here.
@@ -794,4 +795,26 @@ it('expands and highlights a chart-selected request and scrolls vertically to it
 	} finally {
 		rect.mockRestore();
 	}
+});
+
+describe('LogViewer: the puppy companion', () => {
+	afterEach(() => {
+		puppy.shown = false;
+		puppy.pulse = 0;
+	});
+
+	it('gives the puppy a wag each time a JSON line opens or closes', async () => {
+		puppy.shown = true;
+		const rows = await renderWithJsonOff([
+			{
+				id: 'p1',
+				timestamp: Date.UTC(2024, 0, 2, 3, 4, 5),
+				message: '{"level":"info","msg":"woof"}',
+				streamName: 'stream-1',
+			},
+		]);
+		await fireEvent.click(rows[0]);
+		await fireEvent.click(rows[0]);
+		expect(puppy.pulse).toBe(2);
+	});
 });
