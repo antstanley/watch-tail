@@ -159,7 +159,8 @@
 			No log groups match “{query}”.
 		</p>
 	{:else}
-		<ul class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
+		<!-- A size container: what fits in a row depends on the sidebar's width, not the window's. -->
+		<ul class="@container flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
 			{#each visible as group (group.arn ?? group.name)}
 				<li class="flex items-center gap-1.5">
 					<input
@@ -182,8 +183,9 @@
 							group.name,
 						)}"
 					>
+						<!-- The name always keeps some room: a badge beside it must never hide it. -->
 						<span
-							class="min-w-0 flex-1 overflow-hidden whitespace-nowrap font-mono"
+							class="min-w-16 flex-1 overflow-hidden whitespace-nowrap font-mono"
 							use:fitGroupName={group.name}
 							aria-hidden="true">{group.name}</span
 						>
@@ -199,9 +201,9 @@
 									</span>
 								{/if}
 								{#if archivedSpan(group) !== null}
-									<!-- The span needs room, so it only appears on wide sidebars. -->
+									<!-- The span needs room, so it only appears when the list itself is wide. -->
 									<span
-										class="hidden text-[0.6875rem] text-neutral-500 xl:inline"
+										class="hidden text-[0.6875rem] text-neutral-500 @2xl:inline"
 										data-testid="group-archived-span"
 									>
 										{archivedSpan(group)}
