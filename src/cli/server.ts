@@ -7,6 +7,7 @@
  */
 import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -56,6 +57,32 @@ export function uiUrl(host: string, port: number): string {
 /** Health endpoint used to detect readiness. */
 export function healthUrl(baseUrl: string): string {
 	return new URL('/api/health', baseUrl).toString();
+}
+
+/**
+ * Asks the operating system for a free TCP port on `host`.
+ *
+ * The MCP server runs a private watch-tail on a port of its own, and several
+ * agents can each start one, so a fixed port would collide. The socket is closed
+ * before the port is handed back: the gap is small and the health check catches
+ * the rare race.
+ */
+export function findFreePort(host = '127.0.0.1'): Promise<number> {
+	return new Promise<number>((resolvePort, reject) => {
+		const probe = createServer();
+		probe.once('error', (error) => {
+			probe.close();
+			reject(error);
+		});
+		probe.listen(0, host, () => {
+			const address = probe.address();
+			const port = typeof address === 'object' && address !== null ? address.port : 0;
+			probe.close(() => {
+				if (port > 0) resolvePort(port);
+				else reject(new Error('the operating system did not return a free port'));
+			});
+		});
+	});
 }
 
 /** Command that opens `url` in the platform browser. */

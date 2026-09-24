@@ -6,6 +6,10 @@ import {
 	ARCHIVE_SCHEMA,
 	ARCHIVE_TOTALS_SQL,
 	archiveEventKey,
+	buildCoverageDeleteQuery,
+	buildCoverageGroupQuery,
+	buildCoverageInsert,
+	buildCoverageQuery,
 	buildGroupsQuery,
 	buildInsertSql,
 	buildPageQuery,
@@ -15,16 +19,22 @@ import {
 	buildRequestIdBackfillUpdate,
 	buildSeriesQuery,
 	escapeLike,
+	intersectCoverage,
 	maxSeqOf,
+	mergeCoverage,
 	planRequestIdBackfill,
 	rowToBackfillWatermark,
 	rowToMaxSeq,
 	rowToTotals,
 	rowsToBackfillCandidates,
+	rowsToCoverage,
+	rowsToCoverageByGroup,
 	rowsToGroups,
 	rowsToPage,
 	rowsToSeries,
+	subtractCoverage,
 	toArchiveParams,
+	toCoverageParams,
 	toRequestIdBackfillParams,
 } from './archive-sql';
 import type { LogEventDto } from '$lib/types';
@@ -94,6 +104,108 @@ describe('schema', () => {
 				statement.includes('CREATE TABLE IF NOT EXISTS archive_meta (key VARCHAR PRIMARY KEY'),
 			),
 		).toBe(true);
+		// Coverage is what a historic view reads instead of calling CloudWatch.
+		expect(
+			ARCHIVE_SCHEMA.some((statement) =>
+				statement.includes('CREATE TABLE IF NOT EXISTS archive_coverage'),
+			),
+		).toBe(true);
+	});
+});
+
+describe('coverage intervals', () => {
+	test('merges overlapping and adjacent ranges, without mutating the input', () => {
+		const input = [
+			{ start: 30, end: 40 },
+			{ start: 10, end: 20 },
+			{ start: 21, end: 29 }, // adjacent to both neighbours
+			{ start: 100, end: 110 },
+			{ start: 50, end: 45 }, // inverted, dropped
+		];
+		expect(mergeCoverage(input)).toEqual([
+			{ start: 10, end: 40 },
+			{ start: 100, end: 110 },
+		]);
+		expect(input).toEqual([
+			{ start: 30, end: 40 },
+			{ start: 10, end: 20 },
+			{ start: 21, end: 29 },
+			{ start: 100, end: 110 },
+			{ start: 50, end: 45 },
+		]);
+	});
+
+	test('intersects coverage with a window, clipping the edges', () => {
+		const intervals = [
+			{ start: 0, end: 100 },
+			{ start: 300, end: 400 },
+		];
+		expect(intersectCoverage(50, 350, intervals)).toEqual([
+			{ start: 50, end: 100 },
+			{ start: 300, end: 350 },
+		]);
+		expect(intersectCoverage(500, 600, intervals)).toEqual([]);
+	});
+
+	test('subtracts coverage from a window, leaving the gaps', () => {
+		expect(subtractCoverage(0, 1000, [{ start: 200, end: 300 }])).toEqual([
+			{ start: 0, end: 199 },
+			{ start: 301, end: 1000 },
+		]);
+		expect(
+			subtractCoverage(0, 1000, [
+				{ start: -50, end: 100 },
+				{ start: 900, end: 5000 },
+			]),
+		).toEqual([{ start: 101, end: 899 }]);
+		expect(subtractCoverage(0, 1000, [])).toEqual([{ start: 0, end: 1000 }]);
+		expect(subtractCoverage(0, 1000, [{ start: 0, end: 1000 }])).toEqual([]);
+	});
+
+	test('builds the window query with one placeholder per group', () => {
+		const { sql, params } = buildCoverageQuery(REGION, [GROUP, 'other'], 10, 99);
+		expect(sql).toContain('log_group IN (?, ?)');
+		expect(sql).toContain('end_ms >= ? AND start_ms <= ?');
+		expect(params).toEqual([REGION, GROUP, 'other', 10n, 99n]);
+	});
+
+	test('maps a single group of rows and drops unusable ones', () => {
+		expect(
+			rowsToCoverage([
+				{ start_ms: 1n, end_ms: 2n },
+				{ start_ms: null, end_ms: 3n },
+				{ start_ms: 4n, end_ms: 5n },
+			]),
+		).toEqual([
+			{ start: 1, end: 2 },
+			{ start: 4, end: 5 },
+		]);
+	});
+
+	test('maps rows to merged intervals per group', () => {
+		const map = rowsToCoverageByGroup([
+			{ log_group: GROUP, start_ms: 10n, end_ms: 20n },
+			{ log_group: GROUP, start_ms: 21n, end_ms: 30n },
+			{ log_group: 'other', start_ms: 5n, end_ms: 6n },
+			{ log_group: null, start_ms: 1n, end_ms: 2n }, // unusable, dropped
+		]);
+		expect(map.get(GROUP)).toEqual([{ start: 10, end: 30 }]);
+		expect(map.get('other')).toEqual([{ start: 5, end: 6 }]);
+	});
+
+	test('builds the merge-on-write statements', () => {
+		const group = buildCoverageGroupQuery(REGION, GROUP);
+		expect(group.sql).toContain('WHERE region = ? AND log_group = ?');
+		expect(group.params).toEqual([REGION, GROUP]);
+		const removal = buildCoverageDeleteQuery(REGION, GROUP);
+		expect(removal.sql).toContain('DELETE FROM archive_coverage');
+		expect(buildCoverageInsert(2)).toContain('VALUES (?, ?, ?, ?), (?, ?, ?, ?)');
+		expect(toCoverageParams(REGION, GROUP, [{ start: 1, end: 2 }])).toEqual([
+			REGION,
+			GROUP,
+			1n,
+			2n,
+		]);
 	});
 });
 

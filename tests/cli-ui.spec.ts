@@ -25,6 +25,7 @@ vi.mock('@clack/prompts', () => ({
 	isCancel: (value: unknown) => value === CANCEL,
 	confirm: async () => state.answer,
 	autocomplete: async () => state.answer,
+	multiselect: async () => state.answer,
 }));
 
 const { PromptCancelled, createUi } = await import('../src/cli/ui.ts');
@@ -42,6 +43,23 @@ describe('createUi: a cancelled prompt', () => {
 		state.answer = CANCEL;
 		const ui = createUi({ interactive: true });
 		await expect(ui.confirm('run the login?')).rejects.toBeInstanceOf(PromptCancelled);
+	});
+
+	it('throws for a multi-select instead of answering nothing', async () => {
+		state.answer = CANCEL;
+		const ui = createUi({ interactive: true });
+		await expect(ui.multiChoose('which agents?', [{ value: 'cursor' }])).rejects.toBeInstanceOf(
+			PromptCancelled,
+		);
+	});
+
+	it('returns the chosen values from a multi-select', async () => {
+		state.answer = ['cursor', 'codex'];
+		const ui = createUi({ interactive: true });
+		await expect(ui.multiChoose('which agents?', [{ value: 'cursor' }])).resolves.toEqual([
+			'cursor',
+			'codex',
+		]);
 	});
 
 	it('still answers yes and no normally', async () => {

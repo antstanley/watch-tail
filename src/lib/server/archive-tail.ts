@@ -15,9 +15,10 @@ import type { TailBatch } from './tail';
 export type ArchivePageSource = {
 	available: boolean;
 	error: string | null;
+	/** A page, with `error` set when the read failed rather than ran out of rows. */
 	page: (
 		request: ArchivePageRequest,
-	) => Promise<{ events: LogEventDto[]; last: ArchiveCursor | null }>;
+	) => Promise<{ events: LogEventDto[]; last: ArchiveCursor | null; error?: string }>;
 };
 
 /** Page size used when the caller does not ask for one. */
@@ -58,8 +59,8 @@ export function archiveUnavailableMessage(archive: ArchivePageSource): string {
 /**
  * Yields archived events for one window, oldest first.
  *
- * An unavailable archive produces a single `error` batch instead of throwing, so
- * the browser shows a normal stream error. An aborted signal ends the generator
+ * An unavailable archive, or a page that cannot be read, produces a single
+ * `error` batch instead of throwing, so the browser shows a normal stream error. An aborted signal ends the generator
  * without yielding an `end` batch, which is what the route treats as a
  * client disconnect.
  */
@@ -117,12 +118,24 @@ export async function* tailArchivedEvents(
 			after: cursor,
 			limit: pageSize,
 		});
+		// A failed read is not the end of the window: say so, and stop without an
+		// `end`, the same way an unavailable archive does.
+		if (page.error !== undefined) {
+			yield {
+				type: 'error',
+				message: `The local archive could not be read: ${page.error}`,
+				code: 'archive-read-failed',
+			};
+			return;
+		}
 		if (page.events.length === 0) {
 			yield { type: 'end', reason: 'window-complete' };
 			return;
 		}
 		emitted += page.events.length;
-		yield { type: 'events', events: page.events };
+		// `origin` marks these as already archived, so a view that mixes the two
+		// sources never writes them back.
+		yield { type: 'events', events: page.events, origin: 'archive' };
 		cursor = page.last;
 		// A short page or an unusable cursor means there is nothing left to read.
 		if (cursor === null || page.events.length < pageSize) {

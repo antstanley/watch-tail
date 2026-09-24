@@ -11,6 +11,8 @@
 		"localstack",
 		"log-viewer",
 		"logs",
+		"mcp",
+		"model-context-protocol",
 		"sveltekit",
 		"tail",
 		"tailwindcss"
@@ -80,7 +82,10 @@
 		"@bomb.sh/tab": "^0.0.22",
 		"@clack/prompts": "^1.8.0",
 		"@lucide/svelte": "^1.47.0",
-		"layerchart": "^2.5.0"
+		"@tmcp/adapter-valibot": "^0.1.6",
+		"layerchart": "^2.5.0",
+		"tmcp": "^1.20.0",
+		"valibot": "^1.5.0"
 	},
 	"devDependencies": {
 		"@changesets/changelog-github": "^1.0.1",

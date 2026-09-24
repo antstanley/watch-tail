@@ -7,6 +7,7 @@
  */
 import t from '@bomb.sh/tab';
 import { readProfiles } from '../lib/cli/aws.ts';
+import { AGENTS } from './mcp/agents.ts';
 import { DEFAULT_HOST, DEFAULT_PORT, FLOCI_ENDPOINT } from './options.ts';
 
 /** Shells `tab` can generate scripts for. */
@@ -85,6 +86,29 @@ function registerCompletionSpec(profiles: string[] = []): void {
 	const complete = t.command('complete', 'Print a shell completion script');
 	complete.argument('shell', function (this: unknown, emit) {
 		for (const shell of SHELLS) emit(shell, `${shell} completion script`);
+	});
+
+	const mcp = t.command('mcp', 'Serve watch-tail to an AI agent over stdio');
+	mcp.argument('subcommand', function (this: unknown, emit) {
+		emit('init', 'Detect agents and write watch-tail into them');
+	});
+	mcp.option('url', 'Use a watch-tail already running at this URL', function (emit) {
+		emit('http://127.0.0.1:4517', 'a watch-tail on the default port');
+	});
+	mcp.option('agent', 'Agents to configure, comma separated', function (emit) {
+		for (const agent of AGENTS) emit(agent.id, agent.name);
+	});
+	mcp.option('yes', 'Configure every detected agent without asking');
+	mcp.option('scope', 'Where to write the configuration', function (emit) {
+		emit('user', 'user-wide configuration');
+		emit('project', 'configuration for this project');
+	});
+	mcp.option('command', 'Executable written into the agent config', function (emit) {
+		emit('npx', 'the published package (default)');
+		emit('node', 'run a local build');
+	});
+	mcp.option('args', 'Arguments written before `mcp`', function (emit) {
+		emit('-y watch-tail', 'the published package (default)');
 	});
 }
 

@@ -6,6 +6,7 @@ import {
 	ARCHIVE_FILE_NAME,
 	LOCK_RETRIES,
 	LogArchive,
+	archiveIdleReleaseMs,
 	describeOpenError,
 	loadDuckDbDriver,
 	resolveArchiveConfig,
@@ -43,6 +44,8 @@ function fakeDriver(
 	const calls: Call[] = [];
 	let closes = 0;
 	let connects = 0;
+	let creates = 0;
+	let instanceCloses = 0;
 	const connection: DriverConnection = {
 		async run(sql, params) {
 			const failure = options.failOn?.(sql) ?? null;
@@ -61,10 +64,14 @@ function fakeDriver(
 		DuckDBInstance: {
 			create: async () => {
 				if (options.createFails !== undefined) throw new Error(options.createFails);
+				creates += 1;
 				return {
 					connect: async () => {
 						connects += 1;
 						return connection;
+					},
+					closeSync() {
+						instanceCloses += 1;
 					},
 				};
 			},
@@ -76,6 +83,8 @@ function fakeDriver(
 		statements: () => calls.map((call) => call.sql),
 		closes: () => closes,
 		connects: () => connects,
+		creates: () => creates,
+		instanceCloses: () => instanceCloses,
 	};
 }
 
@@ -402,7 +411,119 @@ describe('LogArchive reads', () => {
 		await archive.close();
 		await archive.close();
 		expect(fake.closes()).toBe(1);
+		// Closing the database, not only the connection, is what frees the file lock.
+		expect(fake.instanceCloses()).toBe(1);
 		expect(archive.available).toBe(false);
+	});
+
+	test('a failed page read says so instead of looking like an empty window', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+		});
+		// The page query is the only statement that fails.
+		const connection = await (await fake.driver.DuckDBInstance.create('')).connect();
+		const read = connection.runAndReadAll;
+		connection.runAndReadAll = async (sql, params) => {
+			if (sql.startsWith('SELECT region, log_group, log_stream')) {
+				throw new Error('IO Error: read failed');
+			}
+			return read(sql, params);
+		};
+		const page = await archive.page({
+			region: 'us-east-1',
+			logGroups: ['/g'],
+			startTime: 0,
+			endTime: 1,
+			search: null,
+			streamPrefix: null,
+			levels: null,
+			after: null,
+			limit: 10,
+		});
+		expect(page).toEqual({ events: [], last: null, error: 'IO Error: read failed' });
+	});
+});
+
+/** Waits on a real timer, for the idle release to fire (or not). */
+function pause(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+describe('LogArchive idle release', () => {
+	test('releases the file when idle and reopens it for the next statement', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+			idleReleaseMs: 20,
+		});
+		expect(fake.creates()).toBe(1);
+		await pause(60);
+		expect(fake.instanceCloses()).toBe(1);
+		// Still usable: the next statement opens the file again.
+		expect(archive.available).toBe(true);
+		expect(await archive.record('us-east-1', '/g', [event()])).toBe(1);
+		expect(fake.creates()).toBe(2);
+		await archive.close();
+	});
+
+	test('keeps the file while statements keep coming', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+			idleReleaseMs: 40,
+		});
+		for (let round = 0; round < 4; round += 1) {
+			await pause(15);
+			await archive.record('us-east-1', '/g', [event({ id: `e${round}` })]);
+		}
+		expect(fake.instanceCloses()).toBe(0);
+		await archive.close();
+	});
+
+	test('reports a lock taken while released, and recovers once it clears', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+			idleReleaseMs: 10,
+		});
+		await pause(40);
+		const create = fake.driver.DuckDBInstance.create;
+		fake.driver.DuckDBInstance.create = async () => {
+			throw new Error('IO Error: Could not set lock on file');
+		};
+		expect(await archive.record('us-east-1', '/g', [event()])).toBe(0);
+		expect(archive.error).toContain('locked by another process');
+		fake.driver.DuckDBInstance.create = create;
+		expect(await archive.record('us-east-1', '/g', [event()])).toBe(1);
+		await archive.close();
+	});
+
+	test('stays open without the option', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+		});
+		await pause(30);
+		expect(fake.instanceCloses()).toBe(0);
+		await archive.close();
+	});
+
+	test('reads the idle time from the environment', () => {
+		expect(archiveIdleReleaseMs({})).toBe(0);
+		expect(archiveIdleReleaseMs({ WATCH_TAIL_ARCHIVE_IDLE_MS: '5000' })).toBe(5000);
+		expect(archiveIdleReleaseMs({ WATCH_TAIL_ARCHIVE_IDLE_MS: 'soon' })).toBe(0);
+		expect(archiveIdleReleaseMs({ WATCH_TAIL_ARCHIVE_IDLE_MS: '-1' })).toBe(0);
 	});
 });
 
@@ -960,6 +1081,121 @@ describe.skipIf(!driverInstalled)('request ids against a real database file', ()
 				['unknown', 1],
 				['warn', 1],
 			]);
+		} finally {
+			await archive.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('LogArchive coverage', () => {
+	/** Opens an archive whose driver answers coverage reads from `rows`. */
+	async function coverageArchive(
+		rows: Record<string, unknown>[] = [],
+	): Promise<{ archive: LogArchive; fake: ReturnType<typeof fakeDriver> }> {
+		const fake = fakeDriver({
+			respond: (sql) => (sql.includes('FROM archive_coverage') ? rows : []),
+		});
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+		});
+		return { archive, fake };
+	}
+
+	test('reads and merges the coverage of a window', async () => {
+		const { archive } = await coverageArchive([
+			{ log_group: '/g', start_ms: BigInt(10), end_ms: BigInt(20) },
+			{ log_group: '/g', start_ms: BigInt(21), end_ms: BigInt(30) },
+			{ log_group: '/other', start_ms: BigInt(5), end_ms: BigInt(6) },
+		]);
+		const coverage = await archive.coverage('us-east-1', ['/g', '/other'], 0, 100);
+		expect(coverage.get('/g')).toEqual([{ start: 10, end: 30 }]);
+		expect(coverage.get('/other')).toEqual([{ start: 5, end: 6 }]);
+	});
+
+	test('merges new coverage into what the group already had', async () => {
+		const { archive, fake } = await coverageArchive([{ start_ms: BigInt(10), end_ms: BigInt(20) }]);
+		await archive.recordCoverage('us-east-1', [{ logGroup: '/g', start: 21, end: 30 }]);
+
+		const insert = fake.calls.find((call) => call.sql.startsWith('INSERT INTO archive_coverage'));
+		expect(insert?.params).toEqual(['us-east-1', '/g', 10n, 30n]);
+		const removal = fake.calls.find((call) => call.sql.startsWith('DELETE FROM archive_coverage'));
+		expect(removal?.params).toEqual(['us-east-1', '/g']);
+	});
+
+	test('writes the new range when the group had none', async () => {
+		const { archive, fake } = await coverageArchive([]);
+		await archive.recordCoverage('us-east-1', [{ logGroup: '/g', start: 1, end: 2 }]);
+		const insert = fake.calls.find((call) => call.sql.startsWith('INSERT INTO archive_coverage'));
+		expect(insert?.params).toEqual(['us-east-1', '/g', 1n, 2n]);
+	});
+
+	test('does nothing without entries', async () => {
+		const { archive, fake } = await coverageArchive();
+		await archive.recordCoverage('us-east-1', []);
+		const changed = fake.calls.filter(
+			(call) =>
+				call.sql.startsWith('INSERT INTO archive_coverage') ||
+				call.sql.startsWith('DELETE FROM archive_coverage'),
+		);
+		expect(changed).toEqual([]);
+	});
+
+	test('an unavailable archive reports no coverage and swallows a write', async () => {
+		const archive = LogArchive.unavailable('/tmp/archive.duckdb', 'no driver');
+		expect(await archive.coverage('us-east-1', ['/g'], 0, 100)).toEqual(new Map());
+		await expect(
+			archive.recordCoverage('us-east-1', [{ logGroup: '/g', start: 1, end: 2 }]),
+		).resolves.toBeUndefined();
+	});
+});
+
+describe.skipIf(!driverInstalled)('LogArchive coverage against a real database file', () => {
+	test('records, merges and reads coverage per group', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'watch-tail-coverage-'));
+		const path = join(dir, 'archive.duckdb');
+		const archive = await LogArchive.open({ path });
+		try {
+			expect(archive.available).toBe(true);
+
+			await archive.recordCoverage('af-south-1', [
+				{ logGroup: '/aws/lambda/api', start: TS, end: TS + 100 },
+				{ logGroup: '/aws/lambda/api', start: TS + 101, end: TS + 200 },
+				{ logGroup: '/aws/lambda/other', start: TS, end: TS + 50 },
+			]);
+			// Adjacent ranges merge in SQL as well as in the code that plans them.
+			expect(await archive.coverage('af-south-1', ['/aws/lambda/api'], TS, TS + 200)).toEqual(
+				new Map([['/aws/lambda/api', [{ start: TS, end: TS + 200 }]]]),
+			);
+
+			// A later scan that closes the gap leaves one range.
+			await archive.recordCoverage('af-south-1', [
+				{ logGroup: '/aws/lambda/api', start: TS + 200, end: TS + 400 },
+			]);
+			expect(await archive.coverage('af-south-1', ['/aws/lambda/api'], 0, TS + 1000)).toEqual(
+				new Map([['/aws/lambda/api', [{ start: TS, end: TS + 400 }]]]),
+			);
+
+			// The window query clips to what overlaps and keeps groups apart.
+			expect(
+				await archive.coverage(
+					'af-south-1',
+					['/aws/lambda/api', '/aws/lambda/other'],
+					TS + 40,
+					TS + 60,
+				),
+			).toEqual(
+				new Map([
+					['/aws/lambda/api', [{ start: TS, end: TS + 400 }]],
+					['/aws/lambda/other', [{ start: TS, end: TS + 50 }]],
+				]),
+			);
+			// Another region is a different archive slice.
+			expect(await archive.coverage('eu-west-1', ['/aws/lambda/api'], 0, TS + 1000)).toEqual(
+				new Map(),
+			);
 		} finally {
 			await archive.close();
 			rmSync(dir, { recursive: true, force: true });
