@@ -30,6 +30,9 @@ Requires **Node.js 22+**. Prefer a global install? `npm install -g watch-tail` g
 Choose a **Theme** from the header: Midnight, Ocean, Forest and Plum are dark palettes;
 Daylight, Sand, Mint and Lavender are light palettes. The choice is remembered in this browser.
 
+Need the interface larger? Set **Text size** in the header to Large or Extra large. It scales the
+whole UI, including the log view, and is remembered in this browser.
+
 ## What you get
 
 - **Live tail and historic scans.** Follow new events or select a preset (15 minutes to 5 days) or

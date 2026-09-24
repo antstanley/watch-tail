@@ -27,7 +27,7 @@
 	});
 </script>
 
-<label class="ml-auto flex items-center gap-2 text-xs text-neutral-400">
+<label class="flex items-center gap-2 text-xs text-neutral-400">
 	<span>Theme</span>
 	<select
 		aria-label="Colour theme"

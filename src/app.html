@@ -4,11 +4,12 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
-		<!-- Apply the saved palette before styles paint; storage may be disabled. -->
+		<!-- Apply the saved palette and text size before styles paint; storage may be disabled. -->
 		<script>
 			try {
-				document.documentElement.dataset.theme =
-					localStorage.getItem('watch-tail:theme') || 'midnight';
+				const root = document.documentElement;
+				root.dataset.theme = localStorage.getItem('watch-tail:theme') || 'midnight';
+				root.dataset.textSize = localStorage.getItem('watch-tail:text-size') || 'default';
 			} catch {}
 		</script>
 		%sveltekit.head%

@@ -613,6 +613,43 @@ async function main(): Promise<number> {
 		);
 		await page.getByTestId('theme-select').selectOption('midnight');
 
+		// The reader can scale the interface: each step must grow the root font.
+		const sizes = ['small', 'default', 'large', 'xlarge'];
+		check(
+			checks,
+			'four text sizes available',
+			(await page.getByTestId('text-size-select').locator('option').count()) === sizes.length,
+		);
+		let previousRootPx = 0;
+		for (const size of sizes) {
+			await page.getByTestId('text-size-select').selectOption(size);
+			const state = await page.evaluate(() => ({
+				selected: document.documentElement.dataset.textSize,
+				saved: localStorage.getItem('watch-tail:text-size'),
+				rootPx: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+			}));
+			const grew = state.rootPx > previousRootPx;
+			previousRootPx = state.rootPx;
+			check(
+				checks,
+				`text size ${size} applied and saved`,
+				state.selected === size && state.saved === size && grew,
+				`${state.rootPx}px`,
+			);
+		}
+		await page.reload();
+		await page.waitForFunction(
+			() =>
+				(document.querySelector('[data-testid="text-size-select"]') as HTMLSelectElement | null)
+					?.value === 'xlarge',
+		);
+		check(
+			checks,
+			'text size restored after reload',
+			(await page.getByTestId('text-size-select').inputValue()) === 'xlarge',
+		);
+		await page.getByTestId('text-size-select').selectOption('default');
+
 		check(checks, 'no console errors', consoleErrors.length === 0, consoleErrors.join(' | '));
 
 		if (options.screenshot !== null) {

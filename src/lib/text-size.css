@@ -1,0 +1,20 @@
+/*
+ * Text size, applied to the root element so type, spacing and line height all
+ * grow together. Percentages keep the reader's own browser font size as the
+ * baseline, so a larger system font is still respected.
+ */
+html[data-text-size='small'] {
+	font-size: 90%;
+}
+
+html[data-text-size='default'] {
+	font-size: 100%;
+}
+
+html[data-text-size='large'] {
+	font-size: 115%;
+}
+
+html[data-text-size='xlarge'] {
+	font-size: 130%;
+}

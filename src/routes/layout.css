@@ -1,3 +1,4 @@
 @import 'tailwindcss';
 
 @import '../lib/themes.css';
+@import '../lib/text-size.css';

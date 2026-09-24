@@ -19,6 +19,7 @@
 	import { requestRows } from '$lib/request-groups';
 	import type { RequestRow } from '$lib/request-groups';
 	import { PREFIX_WIDTH, STORAGE_KEYS, parseStoredWidth, remToPx } from '$lib/resize';
+	import { textSize } from '$lib/text-size.svelte';
 	import { LEVEL_LABELS } from '$lib/series-buckets';
 	import { describeWindow } from '$lib/time-range';
 	import type { LogMode } from '$lib/time-range';
@@ -118,8 +119,10 @@
 	const TIMESTAMP_COLUMN_PX = remToPx(7.5);
 	let timestampPx = $state(TIMESTAMP_COLUMN_PX);
 	let groupPx = $state(144);
-	const ROW_PADDING_PX = remToPx(0.75);
-	const ROW_GAP_PX = remToPx(0.5);
+	// Row padding and gap mirror the `px-3`/`gap-2` classes, so they follow the
+	// text size and the column handles stay on their edges.
+	let rowPaddingPx = $derived(remToPx(0.75, textSize.rootFontPx));
+	let rowGapPx = $derived(remToPx(0.5, textSize.rootFontPx));
 	const PREFIX_MIN_PX = remToPx(PREFIX_WIDTH.minRem);
 	const PREFIX_MAX_PX = remToPx(PREFIX_WIDTH.maxRem);
 	const PREFIX_DEFAULT_PX = remToPx(PREFIX_WIDTH.defaultRem);
@@ -477,16 +480,12 @@
 	);
 	/** Left edge of the prefix resize handle, in pixels from the scrolled content edge. */
 	let handleLeft = $derived(
-		ROW_PADDING_PX +
-			timestampPx +
-			ROW_GAP_PX +
-			(groups.length > 1 ? groupPx + ROW_GAP_PX : 0) +
-			prefixPx,
+		rowPaddingPx + timestampPx + rowGapPx + (groups.length > 1 ? groupPx + rowGapPx : 0) + prefixPx,
 	);
 	/** Prefix column width as a CSS length. */
 	let prefixStyle = $derived(`width: ${prefixPx}px`);
 	/** Keep metadata on one flex line, reserving readable space for the wrapped message. */
-	let wrappedMinWidth = $derived(handleLeft + ROW_GAP_PX + 240 + ROW_PADDING_PX);
+	let wrappedMinWidth = $derived(handleLeft + rowGapPx + 240 + rowPaddingPx);
 
 	/** Rows the user has opened, keyed by row key. */
 	let expandedRows = $state<Record<string, boolean>>({});
@@ -945,7 +944,7 @@
 					onChange={(next) => (timestampPx = next)}
 					onCommit={(next) => writePref(STORAGE_KEYS.timestampWidth, String(next))}
 					class="absolute inset-y-0 w-2 border-r border-neutral-800/40"
-					style="left: {ROW_PADDING_PX + timestampPx - 4}px"
+					style="left: {rowPaddingPx + timestampPx - 4}px"
 				/>
 				{#if groups.length > 1}
 					<ColumnResizer
@@ -957,7 +956,7 @@
 						onChange={(next) => (groupPx = next)}
 						onCommit={(next) => writePref(STORAGE_KEYS.groupWidth, String(next))}
 						class="absolute inset-y-0 w-2 border-r border-neutral-800/40"
-						style="left: {ROW_PADDING_PX + timestampPx + ROW_GAP_PX + groupPx - 4}px"
+						style="left: {rowPaddingPx + timestampPx + rowGapPx + groupPx - 4}px"
 					/>
 				{/if}
 				<ColumnResizer
