@@ -52,6 +52,16 @@ Local history (optional, `source=archive`):
 | `src/lib/time-range.ts`                       | Presets, window formatting and datetime-local conversions            |
 | `src/lib/components/ColumnResizer.svelte`     | Focusable drag handle for both resizable columns                     |
 | `src/lib/components/RangeControls.svelte`     | Live/Historic toggle, preset chips and custom window                 |
+| `src/lib/components/LogGroupList.svelte`      | Sidebar group list, archived counts and multi-select                 |
+| `src/lib/components/LogViewer.svelte`         | Log lines panel: toolbar, level chips, request rows, selection       |
+| `src/lib/chart-selection.ts`                  | Resolves a selected chart point to the loaded lines it stands for    |
+| `src/lib/request-groups.ts`                   | What a "request" is, shared by the log view and the chart            |
+| `src/lib/group-name.ts`                       | Shortens group names from the front, keeping the specific end        |
+| `src/lib/themes.ts`                           | Theme ids and names; the palettes live in `themes.css`               |
+| `src/lib/text-size.ts`                        | Text-size options; the scaling lives in `text-size.css`              |
+| `src/lib/puppy.svelte.ts`                     | Puppy companion state and the `wag()` the panels call                |
+| `src/lib/puppy-slots.ts`                      | Pure corner geometry for dragging and arrow-keying the puppy         |
+| `src/lib/components/Puppy*.svelte`            | Header toggle, the draggable companion and the SVG puppy             |
 | `scripts/floci-env.ts`                        | Write/remove `.env.local` for the floci emulator                     |
 | `scripts/seed-floci.ts`                       | Demo log groups, backfill and live traffic                           |
 | `scripts/dev.ts`                              | Launcher: choose an AWS profile (`--profile`) or run local           |
@@ -614,6 +624,23 @@ that file with the floci endpoint and its throwaway credentials.
 | `WATCH_TAIL_ARCHIVE`                | `off` disables the local history archive                                |
 | `WATCH_TAIL_ARCHIVE_DIR`            | Root directory for account/region archives (default: platform data dir) |
 | `WATCH_TAIL_ARCHIVE_DB`             | Explicit file override, bypassing account/region separation             |
+| `WATCH_TAIL_ARCHIVE_IDLE_MS`        | Release the archive file after this idle time (set by `watch-tail mcp`) |
+
+## Browser preferences
+
+Everything the viewer remembers lives in `localStorage` under `watch-tail:*` keys; nothing is sent to
+the server. The theme (`watch-tail:theme`) and text size (`watch-tail:text-size`) are applied by an
+inline script in `src/app.html` before the page paints, as `data-theme` and `data-text-size` on the
+root element, so a light theme or a larger size never flashes the defaults first. `themes.css` and
+`text-size.css` key off those attributes; the text size scales the root font size, so every
+rem-based size follows, and the log view's column maths reads the resolved size back from
+`text-size.svelte.ts`.
+
+Panel and column state (`sidebar-open`, `chart-open`, `log-open`, the column widths, wrap, JSON and
+request grouping) is kept by `src/lib/resize.ts`. The puppy's corner is `watch-tail:puppy-slot`;
+whether the puppy is shown is per page load. Each panel calls `puppy.wag()` when its data arrives or
+it folds, which is a no-op while the puppy is hidden, and `prefers-reduced-motion` swaps the tail
+animation for static wag marks.
 
 ## Request duration chart
 

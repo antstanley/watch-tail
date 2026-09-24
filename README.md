@@ -5,14 +5,14 @@
 **CloudWatch logs. One command. A clearer picture.**
 
 Tail live logs, investigate an incident across services, and keep what you find in a local archive.
-Uses your existing AWS credentials. Runs on your machine.
+Hand the same search to your AI agent over MCP. Uses your existing AWS credentials. Runs on your machine.
 
 [![npm version](https://img.shields.io/npm/v/watch-tail?color=blue)](https://www.npmjs.com/package/watch-tail)
 [![CI](https://github.com/antstanley/watch-tail/actions/workflows/ci.yml/badge.svg)](https://github.com/antstanley/watch-tail/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/watch-tail)](./LICENSE)
 [![node](https://img.shields.io/node/v/watch-tail)](package.json)
 
-<img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.7.1/docs/watch-tail-overview.png" alt="watch-tail: historic logs from multiple groups, with severity chart and request grouping" width="1200">
+<img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.10.0/docs/watch-tail-overview.png" alt="watch-tail: an hour of historic logs from two Lambda groups, with the request-duration chart and request grouping" width="1200">
 
 </div>
 
@@ -27,24 +27,15 @@ npx watch-tail --floci                                  # use a local emulator
 Requires **Node.js 22+**. Prefer a global install? `npm install -g watch-tail` gives you both
 `watch-tail` and the shorter `wt`. Press **Ctrl+C** to stop, including during a live stream or login prompt.
 
-Choose a **Theme** from the header: Midnight, Ocean, Forest and Plum are dark palettes;
-Daylight, Sand, Mint and Lavender are light palettes. The choice is remembered in this browser.
-
-Need the interface larger? Set **Text size** in the header to Large or Extra large. It scales the
-whole UI, including the log view, and is remembered in this browser.
-
-Want company? Press **Puppy** in the header to bring out a Labrador puppy in the bottom-right
-corner. It wags its tail whenever data loads and whenever you fold or unfold a section, and gets
-excited when you click it. Drag it (or focus it and use the arrow keys) to move it to another
-corner; the corner is remembered in this browser. Press **Puppy** again to send it away.
-
 ## What you get
 
 - **Live tail and historic scans.** Follow new events or select a preset (15 minutes to 5 days) or
   custom window. Pause with buffering, filter text, clear the view, and toggle auto-scroll.
 - **Several groups, one view.** Select groups in the sidebar to merge their logs and chart. A group
-  column keeps each line's source visible. Use the chevron on the sidebar's edge to fold it away and
-  give the logs the full width; the choice is remembered.
+  column keeps each line's source visible, and long group names keep their most specific end.
+- **Panels that get out of the way.** The group list, the chart and the log lines each fold from the
+  chevron in their own header. Fold the group list to give the logs the full width, or fold the log
+  lines to let the chart fill the space; each choice is remembered.
 - **Requests, not just lines.** **By request** groups matching request IDs into one expandable row,
   showing line count, elapsed span, and highest severity. Lines without an ID stay visible.
 - **Spot the spike.** In Historic mode, the chart shows request duration over time, coloured by severity.
@@ -60,6 +51,11 @@ corner; the corner is remembered in this browser. Press **Puppy** again to send 
   CloudWatch **filter pattern** keeps that view on the API.
 - **Reopen the same view.** Region, groups, source, mode, and time window live in the URL. A teammate
   needs their own AWS access or a copy of the archive; the link does not include logs or credentials.
+- **Your agent can look too.** `watch-tail mcp init` wires watch-tail into Claude Code, Claude
+  Desktop, Cursor, VS Code and other agents, so they search the same logs and archive you do.
+  See [Agents (MCP)](#agents-mcp).
+- **Make it yours.** Eight colour themes, four text sizes, and an optional puppy companion. See
+  [Make it yours](#make-it-yours).
 
 ## Follow a request
 
@@ -67,7 +63,7 @@ Grouping is on by default. Click a request row to expand its lines; use **By req
 individual events. IDs are detected from `requestId`, `request_id`, `awsRequestId`, `x-request-id`,
 and Lambda's `RequestId:` lines. Each request takes the severity of its most critical line.
 
-<img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.7.1/docs/watch-tail-requests.png" alt="watch-tail: an expanded checkout request showing its JSON payloads and Lambda log lines" width="1200">
+<img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.10.0/docs/watch-tail-requests.png" alt="watch-tail: a selected point on the duration chart highlights and expands its checkout request, showing the JSON payloads and Lambda log lines" width="1200">
 
 Select a chart point to scroll to and highlight its loaded log lines. Requests expand automatically,
 and auto-scroll switches off so incoming logs do not move you away. Count points select all matching
@@ -93,17 +89,18 @@ whole AWS account.
 
 Historic views do not need you to switch source: with **CloudWatch** selected, a historic window is
 answered from the archive wherever it already has the events, and only the ranges it has never seen
-are fetched from AWS. watch-tail remembers which ranges it streamed (an unfiltered scan that ran to
-completion, or a live tail's successful polls), so a window you looked at before is fast and cheap
-the next time. A **filter pattern** disables this, because that scan archived only the matching
-lines. **Local archive** stays the way to read windows older than CloudWatch's 14-day limit.
+are fetched from AWS. watch-tail remembers which ranges it read from CloudWatch in full and stored,
+so a window you looked at before is fast and cheap the next time. The last five minutes of each
+read are always fetched again, because CloudWatch can still be ingesting them. A **filter pattern**
+disables this, because that scan archived only the matching lines. **Local archive** stays the way
+to read windows older than CloudWatch's 14-day limit.
 
 ```bash
 watch-tail --db ./logs.duckdb   # choose an archive file
 watch-tail --no-archive        # disable archiving
 ```
 
-<img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.7.1/docs/watch-tail-archive.png" alt="watch-tail: local archive replay with stored event counts and a severity chart" width="1200">
+<img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.10.0/docs/watch-tail-archive.png" alt="watch-tail: local archive replay with stored event counts per group and the events-over-time chart" width="1200">
 
 Each AWS account and region gets its own `<account-id>/<region>/archive.duckdb` beneath:
 
@@ -136,6 +133,25 @@ ORDER BY events DESC;
 
 CloudWatch scans in this app are limited to the last 14 days; actual AWS retention depends on the
 log group's settings. The local archive can retain events beyond that window.
+
+## Make it yours
+
+Choose a **Theme** from the header: Midnight, Ocean, Forest and Plum are dark palettes;
+Daylight, Sand, Mint and Lavender are light palettes. It covers the controls, log severities, JSON
+colours and the chart.
+
+Need the interface larger or smaller? **Text size** offers Small, Default, Large and Extra large. It
+scales the whole UI, including the log view.
+
+Want company? Press **Puppy** in the header to bring out a Labrador puppy in the bottom-right
+corner. It wags its tail whenever data loads and whenever you fold or unfold a section, and gets
+excited when you click it. Drag it (or focus it and use the arrow keys) to move it to another
+corner. Press **Puppy** again to send it away. If your system asks for reduced motion, it draws
+wag marks instead of animating its tail and moves between corners without sliding.
+
+The theme, text size, puppy corner, panel layout and column widths are all remembered in this browser.
+
+<img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.10.0/docs/watch-tail-puppy.png" alt="watch-tail in the Daylight theme with the group list folded away and the puppy companion in the bottom-right corner" width="1200">
 
 ## Agents (MCP)
 
