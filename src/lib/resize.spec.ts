@@ -98,5 +98,6 @@ describe('units and constants', () => {
 		expect(STORAGE_KEYS.prefixWidth).toBe('watch-tail:prefix-width');
 		expect(STORAGE_KEYS.sidebarWidth).toBe('watch-tail:sidebar-width');
 		expect(STORAGE_KEYS.sidebarOpen).toBe('watch-tail:sidebar-open');
+		expect(STORAGE_KEYS.logOpen).toBe('watch-tail:log-open');
 	});
 });

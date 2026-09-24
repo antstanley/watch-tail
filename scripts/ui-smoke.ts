@@ -659,34 +659,73 @@ async function main(): Promise<number> {
 		);
 		await page.getByTestId('text-size-select').selectOption('default');
 
-		// The group-list sidebar folds away from the chevron on its seam, giving the logs the full width.
-		await page.waitForSelector('[data-testid="sidebar"]');
+		// The group-list sidebar folds its body away from the button in its own header.
+		await page.waitForSelector('[data-testid="sidebar-body"]');
 		const sidebarWasOpen =
-			(await page.getAttribute('[data-testid="sidebar-seam-toggle"]', 'aria-expanded')) === 'true';
-		const toolbarToggleHidden = !(await page.getByTestId('sidebar-toggle').isVisible());
-		await page.click('[data-testid="sidebar-seam-toggle"]');
-		await page.waitForFunction(() => document.querySelector('[data-testid="sidebar"]') === null);
+			(await page.getAttribute('[data-testid="sidebar-collapse"]', 'aria-expanded')) === 'true';
+		await page.click('[data-testid="sidebar-collapse"]');
+		await page.waitForFunction(
+			() => document.querySelector('[data-testid="sidebar-body"]') === null,
+		);
 		const sidebarAfter = await page.evaluate(() => ({
-			expanded: document
-				.querySelector('[data-testid="sidebar-seam-toggle"]')
-				?.getAttribute('aria-expanded'),
+			headerKept: document.querySelector('[data-testid="sidebar-collapse"]') !== null,
+			railShown: document.querySelector('[data-testid="sidebar-expand"]') !== null,
 			saved: localStorage.getItem('watch-tail:sidebar-open'),
 		}));
 		check(
 			checks,
-			'group sidebar collapses from its seam and is remembered',
+			'group sidebar collapses from its header and is remembered',
 			sidebarWasOpen &&
-				toolbarToggleHidden &&
-				sidebarAfter.expanded === 'false' &&
+				sidebarAfter.headerKept &&
+				sidebarAfter.railShown &&
 				sidebarAfter.saved === 'false',
 		);
-		await page.click('[data-testid="sidebar-seam-toggle"]');
-		await page.waitForSelector('[data-testid="sidebar"]');
+		await page.click('[data-testid="sidebar-expand"]');
+		await page.waitForSelector('[data-testid="sidebar-body"]');
 		check(
 			checks,
 			'group sidebar expands again',
-			(await page.getAttribute('[data-testid="sidebar-seam-toggle"]', 'aria-expanded')) === 'true',
+			(await page.getAttribute('[data-testid="sidebar-collapse"]', 'aria-expanded')) === 'true',
 		);
+
+		// The three panel headers line up at one height.
+		const headerHeights = await page.evaluate(() => {
+			const logSection = document.querySelector('[data-testid="log-toggle"]')?.closest('section');
+			const bars = logSection ? [...logSection.children].filter((c) => c.tagName === 'DIV') : [];
+			return {
+				groups: Math.round(
+					document.querySelector('#log-group-sidebar > div')?.getBoundingClientRect().height ?? 0,
+				),
+				chart: Math.round(
+					document.querySelector('[data-testid="event-scatter"] > div')?.getBoundingClientRect()
+						.height ?? 0,
+				),
+				logs: Math.round(bars[0]?.getBoundingClientRect().height ?? 0),
+			};
+		});
+		check(
+			checks,
+			'panel headers share one height',
+			headerHeights.groups === headerHeights.chart && headerHeights.chart === headerHeights.logs,
+			JSON.stringify(headerHeights),
+		);
+
+		// The log lines fold away from the viewer's own header and are remembered.
+		await page.click('[data-testid="log-toggle"]');
+		await page.waitForFunction(
+			() => document.querySelector('[data-testid="log-scroller"]') === null,
+		);
+		const collapsedLines = await page.evaluate(() => ({
+			aria: document.querySelector('[data-testid="log-toggle"]')?.getAttribute('aria-expanded'),
+			saved: localStorage.getItem('watch-tail:log-open'),
+		}));
+		check(
+			checks,
+			'log lines collapse and are remembered',
+			collapsedLines.aria === 'false' && collapsedLines.saved === 'false',
+		);
+		await page.click('[data-testid="log-toggle"]');
+		await page.waitForSelector('[data-testid="log-scroller"]');
 
 		check(checks, 'no console errors', consoleErrors.length === 0, consoleErrors.join(' | '));
 

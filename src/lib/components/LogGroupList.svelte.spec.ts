@@ -130,7 +130,6 @@ describe('LogGroupList archive view', () => {
 		);
 		expect(screen.getByTestId('group-archived-span').className).toContain('hidden');
 		expect(screen.getByTestId('group-source-badge').textContent?.trim()).toBe('local');
-		expect(screen.getByText('Archived groups')).toBeTruthy();
 	});
 
 	it('keeps the CloudWatch list free of archive badges', () => {
@@ -139,7 +138,8 @@ describe('LogGroupList archive view', () => {
 		expect(screen.queryAllByTestId('group-archived-count')).toHaveLength(0);
 		expect(screen.queryByTestId('group-source-badge')).toBeNull();
 		expect(screen.queryByTestId('group-archived-span')).toBeNull();
-		expect(screen.getByText('Log groups')).toBeTruthy();
+		// The header lives on the panel now; the list still reports its own totals.
+		expect(screen.getByTestId('group-count').textContent).toContain('2');
 	});
 
 	it('shows a hint instead of an error when the archive is empty', () => {

@@ -82,6 +82,10 @@
 		groupRequests?: boolean;
 		/** Called when the grouping toggle is pressed. */
 		onGroupToggle?: () => void;
+		/** True while the lines are shown; collapsed, the viewer keeps only its header. */
+		open?: boolean;
+		/** Called when the header's collapse toggle is pressed. */
+		onToggle?: () => void;
 		onFilterChange?: (value: string) => void;
 		onPauseToggle?: () => void;
 		onClear?: () => void;
@@ -111,6 +115,8 @@
 		onLevelChange,
 		groupRequests = true,
 		onGroupToggle,
+		open = true,
+		onToggle,
 		onFilterChange,
 		onPauseToggle,
 		onClear,
@@ -545,73 +551,96 @@
 </script>
 
 <section
-	class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950"
+	class="flex min-h-0 min-w-0 flex-col overflow-hidden bg-neutral-950 {open
+		? 'flex-1'
+		: 'flex-none'}"
 >
 	<div
-		class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-neutral-800 bg-neutral-900/40 px-3 py-2"
+		class="flex min-h-9 flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-neutral-800 bg-neutral-900/40 px-3 py-1"
 	>
-		<StatusBadge status={displayStatus} />
-		{#if archived}
-			<span
-				data-testid="archive-badge"
-				title={archiveTitle}
-				class="rounded-full border border-teal-900 bg-teal-950/60 px-2 py-0.5 text-[0.6875rem] font-medium text-teal-300"
-			>
-				local archive
-			</span>
-		{/if}
-		<span class="text-xs text-neutral-400" data-testid="visible-count">
-			{formatCount(visible.length)} shown
-		</span>
-		{#if grouped}
-			<span class="text-xs text-neutral-400" data-testid="request-count">
-				{formatCount(requestCount)} requests
-			</span>
-		{/if}
-		<span class="text-xs text-neutral-500" data-testid="received-count">
-			{formatCount(receivedCount)} received
-		</span>
-		{#if pendingCount > 0}
-			<span class="text-xs text-amber-300" data-testid="pending-count">
-				{formatCount(pendingCount)} buffered
-			</span>
-		{/if}
-		{#if droppedCount > 0}
-			<span class="text-xs text-amber-300/80" data-testid="dropped-count">
-				{formatCount(droppedCount)} dropped
-			</span>
-		{/if}
-		<span
-			class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.6875rem] font-medium {windowSummary.mode ===
-			'historic'
-				? 'border-amber-900 bg-amber-950/40 text-amber-300'
-				: 'border-neutral-800 bg-neutral-900 text-neutral-400'}"
-			title={windowSummary.title}
-			data-testid="window-chip"
+		<button
+			type="button"
+			onclick={() => onToggle?.()}
+			aria-expanded={open}
+			title={open ? 'Hide the log lines' : 'Show the log lines'}
+			data-testid="log-toggle"
+			class="flex items-center gap-1 text-sm font-semibold text-neutral-200 transition-colors hover:text-sky-300"
 		>
-			{#if windowSummary.mode === 'live'}
-				<span>live</span>
+			{#if open}
+				<ChevronDown size="1em" />
 			{:else}
-				{#if windowSummary.preset !== null}
-					<span>{windowSummary.preset} ·</span>
-				{/if}
-				<span>{windowSummary.from}</span>
-				<ArrowRight size="1em" />
-				<span>{windowSummary.to}</span>
+				<ChevronRight size="1em" />
 			{/if}
-		</span>
-		{#if windowSummary.clamped}
-			<span class="text-[0.6875rem] text-amber-400/80" data-testid="window-clamped">
-				14-day limit
+			Log lines
+		</button>
+		<div class="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1">
+			<StatusBadge status={displayStatus} />
+			{#if archived}
+				<span
+					data-testid="archive-badge"
+					title={archiveTitle}
+					class="rounded-full border border-teal-900 bg-teal-950/60 px-2 py-0.5 text-[0.6875rem] font-medium text-teal-300"
+				>
+					local archive
+				</span>
+			{/if}
+			<span class="text-xs text-neutral-400" data-testid="visible-count">
+				{formatCount(visible.length)} shown
 			</span>
-		{/if}
-		{#if windowComplete}
-			<span class="text-[0.6875rem] text-emerald-400/80" data-testid="window-complete">
-				window complete
+			{#if grouped}
+				<span class="text-xs text-neutral-400" data-testid="request-count">
+					{formatCount(requestCount)} requests
+				</span>
+			{/if}
+			<span class="text-xs text-neutral-500" data-testid="received-count">
+				{formatCount(receivedCount)} received
 			</span>
-		{/if}
+			{#if pendingCount > 0}
+				<span class="text-xs text-amber-300" data-testid="pending-count">
+					{formatCount(pendingCount)} buffered
+				</span>
+			{/if}
+			{#if droppedCount > 0}
+				<span class="text-xs text-amber-300/80" data-testid="dropped-count">
+					{formatCount(droppedCount)} dropped
+				</span>
+			{/if}
+			<span
+				class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.6875rem] font-medium {windowSummary.mode ===
+				'historic'
+					? 'border-amber-900 bg-amber-950/40 text-amber-300'
+					: 'border-neutral-800 bg-neutral-900 text-neutral-400'}"
+				title={windowSummary.title}
+				data-testid="window-chip"
+			>
+				{#if windowSummary.mode === 'live'}
+					<span>live</span>
+				{:else}
+					{#if windowSummary.preset !== null}
+						<span>{windowSummary.preset} ·</span>
+					{/if}
+					<span>{windowSummary.from}</span>
+					<ArrowRight size="1em" />
+					<span>{windowSummary.to}</span>
+				{/if}
+			</span>
+			{#if windowSummary.clamped}
+				<span class="text-[0.6875rem] text-amber-400/80" data-testid="window-clamped">
+					14-day limit
+				</span>
+			{/if}
+			{#if windowComplete}
+				<span class="text-[0.6875rem] text-emerald-400/80" data-testid="window-complete">
+					window complete
+				</span>
+			{/if}
+		</div>
+	</div>
 
-		<div class="ml-auto flex flex-wrap items-center gap-2">
+	{#if open}
+		<div
+			class="flex flex-none flex-wrap items-center gap-2 border-b border-neutral-800 bg-neutral-900/40 px-3 py-1.5"
+		>
 			<div class="flex items-center gap-1" role="group" aria-label="Filter by level">
 				<button
 					type="button"
@@ -705,286 +734,285 @@
 				Auto-scroll
 			</button>
 		</div>
-	</div>
-
-	{#if errorText !== null}
-		<p
-			role="alert"
-			data-testid="stream-error"
-			class="border-b border-red-900 bg-red-950/50 px-3 py-2 text-xs leading-5 text-red-300"
-		>
-			{errorText}
-		</p>
-	{/if}
-
-	{#if selection !== null}
-		<div
-			class="flex items-center gap-2 px-3 py-1 text-xs text-sky-300"
-			role="status"
-			data-testid="chart-selection-status"
-		>
-			{#if selectedEvents.size === 0}
-				Selected logs are not in the loaded buffer. Zoom into this time range to load them.
-			{:else}
-				{visibleSelectedCount} of {selectedEvents.size} selected log lines visible{visibleSelectedCount <
-				selectedEvents.size
-					? ' — clear the text or level filter to see all'
-					: ''}.
-			{/if}
-			<button type="button" class="ml-auto underline" onclick={onSelectionClear}
-				>Clear selection</button
+		{#if errorText !== null}
+			<p
+				role="alert"
+				data-testid="stream-error"
+				class="border-b border-red-900 bg-red-950/50 px-3 py-2 text-xs leading-5 text-red-300"
 			>
-		</div>
-	{/if}
-	<div
-		bind:this={scroller}
-		class="min-h-0 min-w-0 flex-1 overflow-auto bg-neutral-950"
-		data-testid="log-scroller"
-	>
-		{#if group === null || group === ''}
-			<p class="px-3 py-6 text-sm text-neutral-500" data-testid="viewer-idle">
-				Select a log group to start tailing.
+				{errorText}
 			</p>
-		{:else if displayRows.length === 0}
-			<p class="px-3 py-6 text-sm text-neutral-500" data-testid="viewer-empty">
-				{emptyText}
-			</p>
-		{:else}
-			<!-- The handle lives inside the scrolled content so it stays on the column edge. -->
+		{/if}
+
+		{#if selection !== null}
 			<div
-				class="relative min-h-full {listClass}"
-				style:min-width={wrapLines ? `${wrappedMinWidth}px` : undefined}
-				data-testid="log-canvas"
+				class="flex items-center gap-2 px-3 py-1 text-xs text-sky-300"
+				role="status"
+				data-testid="chart-selection-status"
 			>
-				<ol class="font-mono text-xs leading-5" data-testid="log-lines">
-					<!-- One line of the list. A line that belongs to a request is indented and
+				{#if selectedEvents.size === 0}
+					Selected logs are not in the loaded buffer. Zoom into this time range to load them.
+				{:else}
+					{visibleSelectedCount} of {selectedEvents.size} selected log lines visible{visibleSelectedCount <
+					selectedEvents.size
+						? ' — clear the text or level filter to see all'
+						: ''}.
+				{/if}
+				<button type="button" class="ml-auto underline" onclick={onSelectionClear}
+					>Clear selection</button
+				>
+			</div>
+		{/if}
+		<div
+			bind:this={scroller}
+			class="min-h-0 min-w-0 flex-1 overflow-auto bg-neutral-950"
+			data-testid="log-scroller"
+		>
+			{#if group === null || group === ''}
+				<p class="px-3 py-6 text-sm text-neutral-500" data-testid="viewer-idle">
+					Select a log group to start tailing.
+				</p>
+			{:else if displayRows.length === 0}
+				<p class="px-3 py-6 text-sm text-neutral-500" data-testid="viewer-empty">
+					{emptyText}
+				</p>
+			{:else}
+				<!-- The handle lives inside the scrolled content so it stays on the column edge. -->
+				<div
+					class="relative min-h-full {listClass}"
+					style:min-width={wrapLines ? `${wrappedMinWidth}px` : undefined}
+					data-testid="log-canvas"
+				>
+					<ol class="font-mono text-xs leading-5" data-testid="log-lines">
+						<!-- One line of the list. A line that belongs to a request is indented and
 					     marked, so an opened request reads as a nested block. -->
-					{#snippet logLine(row: Row, child: boolean)}
-						{@const expandable = row.expandable !== null}
-						{@const open = expandable && isExpanded(row.key)}
-						<!-- Clicking a line that carries JSON opens it; a line without JSON is
+						{#snippet logLine(row: Row, child: boolean)}
+							{@const expandable = row.expandable !== null}
+							{@const open = expandable && isExpanded(row.key)}
+							<!-- Clicking a line that carries JSON opens it; a line without JSON is
 						     not a control, so it gets no role or handler. -->
-						<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-						<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-						<li
-							class="flex flex-wrap items-baseline gap-2 px-3 py-0.5 hover:bg-neutral-900/60 {listClass} {expandable
-								? 'cursor-pointer'
-								: ''}"
-							data-testid="log-line"
-							data-chart-selected={row.selected ? 'true' : undefined}
-							class:bg-sky-950={row.selected}
-							class:ring-1={row.selected}
-							class:ring-inset={row.selected}
-							class:ring-sky-700={row.selected}
-							data-request-child={child ? 'true' : undefined}
-							data-level={row.level ?? 'unknown'}
-							data-expandable={expandable ? 'true' : undefined}
-							data-expanded={open ? 'true' : undefined}
-							role={expandable ? 'button' : undefined}
-							tabindex={expandable ? 0 : undefined}
-							aria-expanded={expandable ? open : undefined}
-							title={expandable
-								? open
-									? 'Hide the JSON in this line'
-									: 'Show this line as JSON'
-								: undefined}
-							onclick={expandable ? () => toggleRow(row.key) : undefined}
-							onkeydown={expandable
-								? (event) => {
-										if (event.key !== 'Enter' && event.key !== ' ') return;
-										event.preventDefault();
-										toggleRow(row.key);
-									}
-								: undefined}
-						>
-							<span
-								class="shrink-0 truncate text-neutral-500"
-								style="width: {timestampPx}px"
-								title={row.timestamp}
-							>
-								{row.time}
-							</span>
-							{#if groups.length > 1}
-								<!-- Only worth a column when the view holds more than one group. -->
-								<span
-									class="shrink-0 truncate text-teal-400/80"
-									style="width: {groupPx}px"
-									title={row.group ?? ''}
-									data-testid="log-group"
-								>
-									{row.group ?? ''}
-								</span>
-							{/if}
-							<span
-								class="shrink-0 truncate text-sky-400/80"
-								style={prefixStyle}
-								title={row.streamName ?? ''}
-								data-testid="log-stream"
-							>
-								{row.streamName ?? ''}
-							</span>
-							{#if expandable}
-								{#if open}
-									<ChevronDown class="shrink-0 text-neutral-600" size="1em" />
-								{:else}
-									<ChevronRight class="shrink-0 text-neutral-600" size="1em" />
-								{/if}
-							{/if}
-							<span class="{messageClass} {row.levelClass}" data-testid="log-message">
-								{#if row.tokens !== null}
-									{#each row.tokens as token, tokenIndex (`${row.key}-${tokenIndex}`)}<span
-											class={tokenClass(token.type)}>{token.text}</span
-										>{/each}
-								{:else}
-									{row.message}
-								{/if}
-							</span>
-							{#if open && row.expandable !== null}
-								<span
-									class="w-full whitespace-pre text-xs text-neutral-300"
-									data-testid="log-json-expanded"
-								>
-									{#each tokenizeJson(row.expandable) as token, tokenIndex (`${row.key}-json-${tokenIndex}`)}<span
-											class={tokenClass(token.type)}>{token.text}</span
-										>{/each}
-								</span>
-							{/if}
-						</li>
-					{/snippet}
-
-					{#each displayRows as row (row.key)}
-						{#if row.kind === 'request'}
-							{@const open = isExpanded(row.key)}
+							<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+							<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 							<li
-								class={listClass}
-								data-testid="log-request-group"
-								data-chart-selected={row.children.some((child) => child.selected)
-									? 'true'
-									: undefined}
-								class:bg-sky-950={row.children.some((child) => child.selected)}
-								data-request-id={row.id}
-								data-level={row.level}
+								class="flex flex-wrap items-baseline gap-2 px-3 py-0.5 hover:bg-neutral-900/60 {listClass} {expandable
+									? 'cursor-pointer'
+									: ''}"
+								data-testid="log-line"
+								data-chart-selected={row.selected ? 'true' : undefined}
+								class:bg-sky-950={row.selected}
+								class:ring-1={row.selected}
+								class:ring-inset={row.selected}
+								class:ring-sky-700={row.selected}
+								data-request-child={child ? 'true' : undefined}
+								data-level={row.level ?? 'unknown'}
+								data-expandable={expandable ? 'true' : undefined}
 								data-expanded={open ? 'true' : undefined}
-								data-lines={row.count}
+								role={expandable ? 'button' : undefined}
+								tabindex={expandable ? 0 : undefined}
+								aria-expanded={expandable ? open : undefined}
+								title={expandable
+									? open
+										? 'Hide the JSON in this line'
+										: 'Show this line as JSON'
+									: undefined}
+								onclick={expandable ? () => toggleRow(row.key) : undefined}
+								onkeydown={expandable
+									? (event) => {
+											if (event.key !== 'Enter' && event.key !== ' ') return;
+											event.preventDefault();
+											toggleRow(row.key);
+										}
+									: undefined}
 							>
-								<button
-									type="button"
-									class="flex w-full flex-wrap items-baseline gap-2 px-3 py-0.5 text-left hover:bg-neutral-900/60"
-									aria-expanded={open}
-									title={open
-										? 'Hide the lines of this request'
-										: 'Show every line of this request'}
-									data-testid="request-group-summary"
-									onclick={() => toggleRow(row.key)}
+								<span
+									class="shrink-0 truncate text-neutral-500"
+									style="width: {timestampPx}px"
+									title={row.timestamp}
 								>
+									{row.time}
+								</span>
+								{#if groups.length > 1}
+									<!-- Only worth a column when the view holds more than one group. -->
 									<span
-										class="shrink-0 truncate text-neutral-500"
-										style="width: {timestampPx}px"
-										title={row.timestamp}
+										class="shrink-0 truncate text-teal-400/80"
+										style="width: {groupPx}px"
+										title={row.group ?? ''}
+										data-testid="log-group"
 									>
-										{row.time}
+										{row.group ?? ''}
 									</span>
-									{#if groups.length > 1}
-										<span
-											class="shrink-0 truncate text-teal-400/80"
-											style="width: {groupPx}px"
-											title={row.group ?? ''}
-											data-testid="log-group"
-										>
-											{row.group ?? ''}
-										</span>
-									{/if}
-									<span
-										class="shrink-0 truncate text-sky-400/80"
-										style={prefixStyle}
-										title={row.streamName ?? ''}
-										data-testid="log-stream"
-									>
-										{row.streamName ?? ''}
-									</span>
+								{/if}
+								<span
+									class="shrink-0 truncate text-sky-400/80"
+									style={prefixStyle}
+									title={row.streamName ?? ''}
+									data-testid="log-stream"
+								>
+									{row.streamName ?? ''}
+								</span>
+								{#if expandable}
 									{#if open}
 										<ChevronDown class="shrink-0 text-neutral-600" size="1em" />
 									{:else}
 										<ChevronRight class="shrink-0 text-neutral-600" size="1em" />
 									{/if}
-									<span
-										class="shrink-0 rounded border border-neutral-700 bg-neutral-900 px-1.5 font-mono text-[0.6875rem] text-sky-200"
-										data-testid="request-group-id"
-										title="Request id shared by these lines"
-									>
-										{row.id}
-									</span>
-									<span class="shrink-0 text-neutral-400" data-testid="request-group-count">
-										{formatCount(row.count)} lines
-									</span>
-									<span class="shrink-0 text-neutral-500" data-testid="request-group-span">
-										{row.span}
-									</span>
-									<span
-										class="shrink-0 font-medium {row.levelClass}"
-										data-testid="request-group-level"
-									>
-										{row.levelLabel}
-									</span>
-									{#if !open}
-										<span
-											class="min-w-0 truncate text-neutral-500"
-											data-testid="request-group-preview"
-										>
-											{row.preview}
-										</span>
+								{/if}
+								<span class="{messageClass} {row.levelClass}" data-testid="log-message">
+									{#if row.tokens !== null}
+										{#each row.tokens as token, tokenIndex (`${row.key}-${tokenIndex}`)}<span
+												class={tokenClass(token.type)}>{token.text}</span
+											>{/each}
+									{:else}
+										{row.message}
 									{/if}
-								</button>
-								{#if open}
-									<ul class="contents">
-										{#each row.children as child (child.key)}
-											{@render logLine(child, true)}
-										{/each}
-									</ul>
+								</span>
+								{#if open && row.expandable !== null}
+									<span
+										class="w-full whitespace-pre text-xs text-neutral-300"
+										data-testid="log-json-expanded"
+									>
+										{#each tokenizeJson(row.expandable) as token, tokenIndex (`${row.key}-json-${tokenIndex}`)}<span
+												class={tokenClass(token.type)}>{token.text}</span
+											>{/each}
+									</span>
 								{/if}
 							</li>
-						{:else}
-							{@render logLine(row, false)}
-						{/if}
-					{/each}
-				</ol>
+						{/snippet}
 
-				<ColumnResizer
-					label="Resize timestamp column"
-					width={timestampPx}
-					min={64}
-					max={320}
-					testId="timestamp-resizer"
-					onChange={(next) => (timestampPx = next)}
-					onCommit={(next) => writePref(STORAGE_KEYS.timestampWidth, String(next))}
-					class="absolute inset-y-0 w-2 border-r border-neutral-800/40"
-					style="left: {rowPaddingPx + timestampPx - 4}px"
-				/>
-				{#if groups.length > 1}
+						{#each displayRows as row (row.key)}
+							{#if row.kind === 'request'}
+								{@const open = isExpanded(row.key)}
+								<li
+									class={listClass}
+									data-testid="log-request-group"
+									data-chart-selected={row.children.some((child) => child.selected)
+										? 'true'
+										: undefined}
+									class:bg-sky-950={row.children.some((child) => child.selected)}
+									data-request-id={row.id}
+									data-level={row.level}
+									data-expanded={open ? 'true' : undefined}
+									data-lines={row.count}
+								>
+									<button
+										type="button"
+										class="flex w-full flex-wrap items-baseline gap-2 px-3 py-0.5 text-left hover:bg-neutral-900/60"
+										aria-expanded={open}
+										title={open
+											? 'Hide the lines of this request'
+											: 'Show every line of this request'}
+										data-testid="request-group-summary"
+										onclick={() => toggleRow(row.key)}
+									>
+										<span
+											class="shrink-0 truncate text-neutral-500"
+											style="width: {timestampPx}px"
+											title={row.timestamp}
+										>
+											{row.time}
+										</span>
+										{#if groups.length > 1}
+											<span
+												class="shrink-0 truncate text-teal-400/80"
+												style="width: {groupPx}px"
+												title={row.group ?? ''}
+												data-testid="log-group"
+											>
+												{row.group ?? ''}
+											</span>
+										{/if}
+										<span
+											class="shrink-0 truncate text-sky-400/80"
+											style={prefixStyle}
+											title={row.streamName ?? ''}
+											data-testid="log-stream"
+										>
+											{row.streamName ?? ''}
+										</span>
+										{#if open}
+											<ChevronDown class="shrink-0 text-neutral-600" size="1em" />
+										{:else}
+											<ChevronRight class="shrink-0 text-neutral-600" size="1em" />
+										{/if}
+										<span
+											class="shrink-0 rounded border border-neutral-700 bg-neutral-900 px-1.5 font-mono text-[0.6875rem] text-sky-200"
+											data-testid="request-group-id"
+											title="Request id shared by these lines"
+										>
+											{row.id}
+										</span>
+										<span class="shrink-0 text-neutral-400" data-testid="request-group-count">
+											{formatCount(row.count)} lines
+										</span>
+										<span class="shrink-0 text-neutral-500" data-testid="request-group-span">
+											{row.span}
+										</span>
+										<span
+											class="shrink-0 font-medium {row.levelClass}"
+											data-testid="request-group-level"
+										>
+											{row.levelLabel}
+										</span>
+										{#if !open}
+											<span
+												class="min-w-0 truncate text-neutral-500"
+												data-testid="request-group-preview"
+											>
+												{row.preview}
+											</span>
+										{/if}
+									</button>
+									{#if open}
+										<ul class="contents">
+											{#each row.children as child (child.key)}
+												{@render logLine(child, true)}
+											{/each}
+										</ul>
+									{/if}
+								</li>
+							{:else}
+								{@render logLine(row, false)}
+							{/if}
+						{/each}
+					</ol>
+
 					<ColumnResizer
-						label="Resize log group column"
-						width={groupPx}
+						label="Resize timestamp column"
+						width={timestampPx}
 						min={64}
-						max={640}
-						testId="group-resizer"
-						onChange={(next) => (groupPx = next)}
-						onCommit={(next) => writePref(STORAGE_KEYS.groupWidth, String(next))}
+						max={320}
+						testId="timestamp-resizer"
+						onChange={(next) => (timestampPx = next)}
+						onCommit={(next) => writePref(STORAGE_KEYS.timestampWidth, String(next))}
 						class="absolute inset-y-0 w-2 border-r border-neutral-800/40"
-						style="left: {rowPaddingPx + timestampPx + rowGapPx + groupPx - 4}px"
+						style="left: {rowPaddingPx + timestampPx - 4}px"
 					/>
-				{/if}
-				<ColumnResizer
-					label="Resize stream column"
-					width={prefixPx}
-					min={PREFIX_MIN_PX}
-					max={PREFIX_MAX_PX}
-					testId="prefix-resizer"
-					onChange={(next) => (prefixPx = next)}
-					onCommit={() => savePrefixWidth()}
-					class="absolute inset-y-0 w-2 border-r border-neutral-800/40"
-					style="left: {handleLeft - 4}px"
-				/>
-			</div>
-		{/if}
-	</div>
+					{#if groups.length > 1}
+						<ColumnResizer
+							label="Resize log group column"
+							width={groupPx}
+							min={64}
+							max={640}
+							testId="group-resizer"
+							onChange={(next) => (groupPx = next)}
+							onCommit={(next) => writePref(STORAGE_KEYS.groupWidth, String(next))}
+							class="absolute inset-y-0 w-2 border-r border-neutral-800/40"
+							style="left: {rowPaddingPx + timestampPx + rowGapPx + groupPx - 4}px"
+						/>
+					{/if}
+					<ColumnResizer
+						label="Resize stream column"
+						width={prefixPx}
+						min={PREFIX_MIN_PX}
+						max={PREFIX_MAX_PX}
+						testId="prefix-resizer"
+						onChange={(next) => (prefixPx = next)}
+						onCommit={() => savePrefixWidth()}
+						class="absolute inset-y-0 w-2 border-r border-neutral-800/40"
+						style="left: {handleLeft - 4}px"
+					/>
+				</div>
+			{/if}
+		</div>
+	{/if}
 </section>

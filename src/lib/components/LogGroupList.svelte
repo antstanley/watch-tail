@@ -93,9 +93,6 @@
 <section class="flex min-h-0 flex-1 flex-col gap-3">
 	<div class="flex items-center justify-between gap-2">
 		<div class="flex items-baseline gap-2">
-			<h2 class="text-sm font-semibold text-neutral-200">
-				{archived ? 'Archived groups' : 'Log groups'}
-			</h2>
 			<span class="text-xs text-neutral-500" data-testid="group-count">
 				{formatCount(filtered.length)} of {formatCount(groups.length)}
 			</span>

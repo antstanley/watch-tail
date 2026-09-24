@@ -59,6 +59,8 @@
 		onBrush?: (range: BrushRange | null) => void;
 		/** Chart height in px. */
 		height?: number;
+		/** True to grow into the space its parent gives instead of a fixed height. */
+		fill?: boolean;
 		/** Start open, which is also what the first visit uses. */
 		open?: boolean;
 		/** Chart module loader; defaults to the dynamic import. */
@@ -78,6 +80,7 @@
 		byRequest = true,
 		onBrush,
 		height = 200,
+		fill = false,
 		open = true,
 		loadChart = loadChartModule,
 	}: Props = $props();
@@ -163,49 +166,30 @@
 </script>
 
 <section
-	class="flex min-w-0 shrink-0 flex-col gap-1 rounded-lg border border-neutral-800 bg-neutral-950/60 p-2"
+	class="flex min-w-0 flex-col border-b border-neutral-800 bg-neutral-950/60 {fill && expanded
+		? 'min-h-0 flex-1'
+		: 'shrink-0'}"
 	data-testid="event-scatter"
 	aria-label={metric === 'duration' ? 'Request duration over time' : 'Events over time'}
 >
-	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[0.6875rem]">
+	<div
+		class="flex min-h-9 flex-none flex-wrap items-center gap-x-3 gap-y-1 border-b border-neutral-800 bg-neutral-900/40 px-3 py-1.5 text-[0.6875rem]"
+	>
 		<button
 			type="button"
 			onclick={toggle}
 			aria-expanded={expanded}
 			title={expanded ? 'Hide the chart' : 'Show the chart'}
 			data-testid="scatter-toggle"
-			class="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-0.5 font-semibold uppercase tracking-wider text-neutral-400 transition-colors hover:border-neutral-700 hover:text-neutral-200"
+			class="flex items-center gap-1 text-sm font-semibold text-neutral-200 transition-colors hover:text-sky-300"
 		>
 			{#if expanded}
 				<ChevronDown size="1em" />
 			{:else}
 				<ChevronRight size="1em" />
 			{/if}
-			{metric === 'duration' ? 'Request duration' : 'Events over time'}
+			Chart - {metric === 'duration' ? 'Request duration' : 'Events over time'}
 		</button>
-		<div
-			role="group"
-			aria-label="Chart metric"
-			class="flex rounded-md border border-neutral-800 p-0.5"
-		>
-			{#each ['count', 'duration'] as choice}
-				<button
-					type="button"
-					data-testid={`chart-metric-${choice}`}
-					aria-pressed={metric === choice}
-					onclick={() => onMetricChange?.(choice as SeriesMetric)}
-					class="rounded px-2 py-0.5 transition-colors {metric === choice
-						? 'bg-sky-950 text-sky-300'
-						: 'text-neutral-400 hover:text-neutral-200'}"
-				>
-					{choice === 'count' ? 'Count' : 'Duration (ms)'}
-				</button>
-			{/each}
-		</div>
-		<span class="text-neutral-400" data-testid="scatter-summary">
-			{formatCount(totalEvents)}
-			{unit}{#if metric === 'count'}{' '}in {formatCount(bucketCount)} buckets{/if}
-		</span>
 		{#if groups.length > 1}
 			<span class="text-neutral-500" data-testid="scatter-groups">
 				across {groups.length} groups
@@ -227,34 +211,56 @@
 		{#if loading && expanded}
 			<span class="text-amber-300" data-testid="scatter-loading">loading…</span>
 		{/if}
-		{#if expanded}
-			{#if brushPreview !== null}
-				<span class="ml-auto text-sky-300" data-testid="scatter-brush-preview">
-					release to zoom to {formatClock(brushPreview.from)} – {formatClock(brushPreview.to)}
-				</span>
-			{:else}
-				<span class="ml-auto text-neutral-500" data-testid="scatter-hint">
-					select a point to show logs · drag to zoom · click background to clear
-				</span>
-			{/if}
-		{/if}
+		<span class="ml-auto text-neutral-400" data-testid="scatter-summary">
+			{formatCount(totalEvents)}
+			{unit}{#if metric === 'count'}{' '}in {formatCount(bucketCount)} buckets{/if}
+		</span>
 	</div>
 
 	{#if expanded}
-		{#if metric === 'duration'}
-			<p class="px-1 text-[0.6875rem] text-neutral-500" data-testid="duration-note">
-				Observed duration (ms) · last event + its duration − first event · partial requests may
-				appear shorter
-			</p>
-		{/if}
-		<div class="overflow-hidden" style="height: {height}px" data-testid="chart-body">
-			{#if chartError}
-				<p class="px-1 py-4 text-xs text-amber-300" data-testid="scatter-error">
-					The chart could not be loaded. The log view is unaffected.
-				</p>
-			{:else if hasPoints}
-				{#if Chart !== null}
-					<!-- Remounted on reset, which is what clears a brush. -->
+		<div class="flex flex-col gap-1 p-2 {fill ? 'min-h-0 flex-1' : ''}">
+			<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.6875rem]">
+				<div
+					role="group"
+					aria-label="Chart metric"
+					class="flex rounded-md border border-neutral-800 p-0.5"
+				>
+					{#each ['count', 'duration'] as choice}
+						<button
+							type="button"
+							data-testid={`chart-metric-${choice}`}
+							aria-pressed={metric === choice}
+							onclick={() => onMetricChange?.(choice as SeriesMetric)}
+							class="rounded px-2 py-0.5 transition-colors {metric === choice
+								? 'bg-sky-950 text-sky-300'
+								: 'text-neutral-400 hover:text-neutral-200'}"
+						>
+							{choice === 'count' ? 'Count' : 'Duration (ms)'}
+						</button>
+					{/each}
+				</div>
+				{#if brushPreview !== null}
+					<span class="ml-auto text-sky-300" data-testid="scatter-brush-preview">
+						release to zoom to {formatClock(brushPreview.from)} – {formatClock(brushPreview.to)}
+					</span>
+				{:else}
+					<span class="ml-auto text-neutral-500" data-testid="scatter-hint">
+						select a point to show logs · drag to zoom · click background to clear
+					</span>
+				{/if}
+			</div>
+			<div
+				class="relative overflow-hidden {fill ? 'min-h-0 flex-1' : ''}"
+				style={fill ? undefined : `height: ${height}px`}
+				data-testid="chart-body"
+			>
+				{#if chartError}
+					<p class="px-1 py-4 text-xs text-amber-300" data-testid="scatter-error">
+						The chart could not be loaded. The log view is unaffected.
+					</p>
+				{:else if Chart !== null && (hasPoints || !loading)}
+					<!-- Remounted on reset, which is what clears a brush. An empty window still draws
+					     the axes, so the frame does not jump once events arrive. -->
 					{#key `${chartKey}:${metric}`}
 						<Chart
 							{points}
@@ -263,6 +269,7 @@
 							{from}
 							{to}
 							{height}
+							{fill}
 							onBrush={(range) => {
 								brushPreview = null;
 								onBrush?.(range);
@@ -270,18 +277,29 @@
 							onBrushPreview={(range) => (brushPreview = range)}
 						/>
 					{/key}
+					{#if !hasPoints}
+						<!-- No events in this window: say so over the empty chart. -->
+						<div class="pointer-events-none absolute inset-0 flex items-center justify-center">
+							<span
+								class="rounded-md border border-neutral-800 bg-neutral-950/80 px-2.5 py-1 text-xs font-medium text-neutral-400"
+								data-testid="scatter-empty"
+							>
+								No data
+							</span>
+						</div>
+					{/if}
 				{:else}
 					<!-- Placeholder while the chunk is in flight, so the panel does not jump. -->
 					<div
-						class="w-full animate-pulse rounded bg-neutral-900/60"
-						style="height: {height}px"
+						class="w-full animate-pulse rounded bg-neutral-900/60 {fill ? 'h-full' : ''}"
+						style={fill ? undefined : `height: ${height}px`}
 					></div>
 				{/if}
-			{:else if !loading}
-				<p class="px-1 py-6 text-xs text-neutral-500" data-testid="scatter-empty">
-					{metric === 'duration'
-						? 'No requests with a request ID in this window yet.'
-						: 'No events in this window yet.'}
+			</div>
+			{#if metric === 'duration'}
+				<p class="px-1 text-[0.6875rem] text-neutral-500" data-testid="duration-note">
+					Observed duration (ms) · last event + its duration − first event · partial requests may
+					appear shorter
 				</p>
 			{/if}
 		</div>

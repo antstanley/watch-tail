@@ -142,10 +142,32 @@ describe('EventScatterPanel', () => {
 		expect(container.querySelector('[data-testid="scatter-chart"]')).toBeNull();
 	});
 
-	it('shows an empty state instead of a chart for a window with no events', () => {
-		render(EventScatterPanel, { props: props({ points: [] }) });
-		expect(screen.getByTestId('scatter-empty')).toBeTruthy();
-		expect(screen.queryByTestId('scatter-chart')).toBeNull();
+	it('grows into the space it is given while it is open', () => {
+		render(EventScatterPanel, { props: props({ fill: true }) });
+
+		const section = screen.getByTestId('event-scatter');
+		expect(section.className).toContain('flex-1');
+	});
+
+	it('keeps its header height when collapsed, even when asked to fill', async () => {
+		localStorage.setItem(STORAGE_KEYS.chartOpen, '0');
+		render(EventScatterPanel, { props: props({ fill: true }) });
+		await waitFor(() =>
+			expect(screen.getByTestId('scatter-toggle').getAttribute('aria-expanded')).toBe('false'),
+		);
+
+		// A collapsed chart must not stretch, or it would push the panel below it to the bottom.
+		const section = screen.getByTestId('event-scatter');
+		expect(section.className).toContain('shrink-0');
+		expect(section.className).not.toContain('flex-1');
+	});
+
+	it('draws an empty chart with a no-data overlay when the window has no events', async () => {
+		const { container } = render(EventScatterPanel, { props: props({ points: [] }) });
+		await waitFor(() =>
+			expect(container.querySelector('[data-testid="scatter-chart"]')).not.toBeNull(),
+		);
+		expect(screen.getByTestId('scatter-empty').textContent?.trim()).toBe('No data');
 	});
 
 	it('reports a loading count while the archive is being queried', () => {

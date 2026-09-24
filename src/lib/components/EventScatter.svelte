@@ -27,6 +27,8 @@
 		to?: number;
 		/** Chart height in px. */
 		height?: number;
+		/** True to fill the parent's height instead of using `height`. */
+		fill?: boolean;
 		/** Called with the brushed range when the drag ends, or `null` on clear. */
 		onBrush?: (range: BrushRange | null) => void;
 		/** Called while dragging, for a preview that does not re-scope anything. */
@@ -39,6 +41,7 @@
 		from = 0,
 		to = 0,
 		height = 200,
+		fill = false,
 		onBrush,
 		onBrushPreview,
 		onSelect,
@@ -113,7 +116,11 @@
 	}
 </script>
 
-<div class="w-full" style="height: {height}px" data-testid="scatter-chart">
+<div
+	class="w-full {fill ? 'h-full' : ''}"
+	style={fill ? undefined : `height: ${height}px`}
+	data-testid="scatter-chart"
+>
 	<ScatterChart
 		bind:context={chartContext}
 		data={points}

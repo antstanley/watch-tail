@@ -15,6 +15,7 @@ export const STORAGE_KEYS = {
 	wrap: 'watch-tail:wrap',
 	jsonView: 'watch-tail:json-view',
 	chartOpen: 'watch-tail:chart-open',
+	logOpen: 'watch-tail:log-open',
 	groupRequests: 'watch-tail:group-requests',
 } as const;
 

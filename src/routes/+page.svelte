@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { PanelLeft, PanelLeftClose, PanelLeftOpen } from '@lucide/svelte';
+	import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from '@lucide/svelte';
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import EndpointBadge from '$lib/components/EndpointBadge.svelte';
@@ -88,6 +88,8 @@
 	let groupRequests = $state(true);
 	/** True while the group-list sidebar is open; collapsing gives the logs the full width. */
 	let sidebarOpen = $state(true);
+	/** True while the log lines are shown; collapsing keeps only the viewer's header. */
+	let logOpen = $state(true);
 	/** Bucketed counts behind the chart. */
 	let chartSelection = $state<ChartSelection | null>(null);
 	let seriesBucketMs = $state(60_000);
@@ -117,7 +119,7 @@
 			: Math.max(remToPx(SIDEBAR_WIDTH.minRem), (viewportWidth * SIDEBAR_WIDTH.maxVw) / 100),
 	);
 	let sidebarMinPx = remToPx(SIDEBAR_WIDTH.minRem);
-	let sidebarStyle = $derived(`width: min(${sidebarPx}px, ${SIDEBAR_WIDTH.maxVw}vw)`);
+	let sidebarStyle = $derived(`--sidebar-width: min(${sidebarPx}px, ${SIDEBAR_WIDTH.maxVw}vw)`);
 
 	/** Reads a raw preference, tolerating disabled or throwing storage. */
 	function readPref(key: string): string | null {
@@ -142,6 +144,7 @@
 	onMount(() => {
 		groupRequests = readPref(STORAGE_KEYS.groupRequests) !== 'false';
 		sidebarOpen = readPref(STORAGE_KEYS.sidebarOpen) !== 'false';
+		logOpen = readPref(STORAGE_KEYS.logOpen) !== 'false';
 		void bootstrap();
 		const clampToViewport = (): void => {
 			viewportWidth = window.innerWidth;
@@ -372,6 +375,16 @@
 		sidebarOpen = !sidebarOpen;
 		try {
 			localStorage?.setItem(STORAGE_KEYS.sidebarOpen, sidebarOpen ? 'true' : 'false');
+		} catch {
+			// A preference is best effort: private mode, quota, no storage.
+		}
+	}
+
+	/** Collapses or expands the log lines, and remembers the choice. */
+	function toggleLog(): void {
+		logOpen = !logOpen;
+		try {
+			localStorage?.setItem(STORAGE_KEYS.logOpen, logOpen ? 'true' : 'false');
 		} catch {
 			// A preference is best effort: private mode, quota, no storage.
 		}
@@ -621,47 +634,48 @@
 </script>
 
 <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-	<!-- Narrow screens stack the sidebar, so the seam chevron is hidden and this button stands in. -->
-	<button
-		type="button"
-		onclick={toggleSidebar}
-		aria-expanded={sidebarOpen}
-		aria-controls="log-group-sidebar"
-		title={sidebarOpen ? 'Hide the group list' : 'Show the group list'}
-		data-testid="sidebar-toggle"
-		class="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-700 hover:text-neutral-100 lg:hidden"
-	>
-		<PanelLeft size="1em" />
-		Groups
-	</button>
-	<span class="text-[0.6875rem] font-semibold uppercase tracking-wider text-neutral-500">
-		Watching
-	</span>
-	<span
-		class="max-w-[22rem] truncate rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200"
-	>
-		{selectedGroup ?? 'no group selected'}
-	</span>
-	<span class="text-xs text-neutral-500">in</span>
-	<span class="font-mono text-xs text-neutral-300"
-		>{region === '' ? 'resolving region…' : region}</span
-	>
-	{#if source === 'archive'}
-		<!-- The archive is a local file: no endpoint and no credentials are involved. -->
-		<EndpointBadge endpoint={null} credentials={null} />
-		<span
-			data-testid="archive-source-badge"
-			title={archiveTitle}
-			class="rounded-full border border-teal-900 bg-teal-950/60 px-2.5 py-1 text-xs font-medium text-teal-300"
-		>
-			local archive
+	<RangeControls
+		{mode}
+		{range}
+		from={windowFrom}
+		to={windowTo}
+		loading={rangeLoading}
+		disabled={selectedGroup === null}
+		liveDisabled={source === 'archive'}
+		onApply={applyRange}
+	/>
+
+	<!-- Right-aligned: what is being watched, and where it comes from. -->
+	<div class="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+		<span class="text-[0.6875rem] font-semibold uppercase tracking-wider text-neutral-500">
+			Watching
 		</span>
-	{:else}
-		<EndpointBadge {endpoint} credentials={health?.credentials ?? null} />
-	{/if}
-	{#if health !== null && health.ok}
-		<span class="text-xs text-emerald-400/80">API ok</span>
-	{/if}
+		<span
+			class="max-w-[22rem] truncate rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200"
+		>
+			{selectedGroup ?? 'no group selected'}
+		</span>
+		<span class="text-xs text-neutral-500">in</span>
+		<span class="font-mono text-xs text-neutral-300"
+			>{region === '' ? 'resolving region…' : region}</span
+		>
+		{#if source === 'archive'}
+			<!-- The archive is a local file: no endpoint and no credentials are involved. -->
+			<EndpointBadge endpoint={null} credentials={null} />
+			<span
+				data-testid="archive-source-badge"
+				title={archiveTitle}
+				class="rounded-full border border-teal-900 bg-teal-950/60 px-2.5 py-1 text-xs font-medium text-teal-300"
+			>
+				local archive
+			</span>
+		{:else}
+			<EndpointBadge {endpoint} credentials={health?.credentials ?? null} />
+		{/if}
+		{#if health !== null && health.ok}
+			<span class="text-xs text-emerald-400/80">API ok</span>
+		{/if}
+	</div>
 </div>
 
 {#if bootError !== null}
@@ -674,49 +688,52 @@
 	</p>
 {/if}
 
-<RangeControls
-	{mode}
-	{range}
-	from={windowFrom}
-	to={windowTo}
-	loading={rangeLoading}
-	disabled={selectedGroup === null}
-	liveDisabled={source === 'archive'}
-	onApply={applyRange}
-/>
-
-<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 lg:flex-row">
-	{#if sidebarOpen}
-		<div
-			id="log-group-sidebar"
-			class="flex min-h-0 w-full flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 lg:shrink-0"
-			style={sidebarStyle}
-			data-testid="sidebar"
-		>
-			<SourceControls {source} {archiveAvailable} {archivePath} onChange={changeSource} />
-			<RegionSelect {regions} value={region} onchange={changeRegion} />
-			<LogGroupList
-				{groups}
-				{source}
-				{region}
-				selected={selectedGroups}
-				loading={groupsLoading}
-				error={groupsError}
-				onSelect={selectGroup}
-				onToggle={toggleGroup}
-				onRefresh={refreshGroups}
-			/>
-		</div>
-	{/if}
-
-	<!-- Wide screens: a chevron rides the seam between the sidebar and the logs. It sits on the
-	     resize handle when open and on a slim rail once collapsed, so the control is always on the
-	     edge of the thing it moves. -->
+<div class="flex min-h-0 min-w-0 flex-1 flex-col border border-neutral-800 lg:flex-row">
 	<div
-		class="relative hidden shrink-0 lg:flex {sidebarOpen ? 'lg:w-2' : 'lg:w-6'}"
-		data-testid="sidebar-seam"
+		id="log-group-sidebar"
+		class="relative flex min-h-0 w-full flex-col border-b border-neutral-800 bg-neutral-950/60 lg:shrink-0 lg:border-b-0 lg:border-r {!sidebarOpen
+			? 'lg:hidden'
+			: ''}"
+		style={sidebarStyle}
+		data-testid="sidebar"
 	>
+		<div
+			class="flex min-h-9 flex-none items-center gap-x-3 border-b border-neutral-800 bg-neutral-900/40 px-3 py-1.5"
+		>
+			<button
+				type="button"
+				onclick={toggleSidebar}
+				aria-expanded={sidebarOpen}
+				aria-controls="log-group-sidebar"
+				title={sidebarOpen ? 'Hide the group list' : 'Show the group list'}
+				data-testid="sidebar-collapse"
+				class="flex items-center gap-1 text-sm font-semibold text-neutral-200 transition-colors hover:text-sky-300"
+			>
+				<!-- Wide screens collapse to the left rail; narrow screens fold the stacked body away. -->
+				<span class="hidden lg:inline-flex"><ChevronLeft size="1em" /></span>
+				<span class="lg:hidden">
+					{#if sidebarOpen}<ChevronUp size="1em" />{:else}<ChevronDown size="1em" />{/if}
+				</span>
+				{source === 'archive' ? 'Archived groups' : 'Log groups'}
+			</button>
+		</div>
 		{#if sidebarOpen}
+			<div class="flex min-h-0 flex-1 flex-col gap-3 p-3" data-testid="sidebar-body">
+				<SourceControls {source} {archiveAvailable} {archivePath} onChange={changeSource} />
+				<RegionSelect {regions} value={region} onchange={changeRegion} />
+				<LogGroupList
+					{groups}
+					{source}
+					{region}
+					selected={selectedGroups}
+					loading={groupsLoading}
+					error={groupsError}
+					onSelect={selectGroup}
+					onToggle={toggleGroup}
+					onRefresh={refreshGroups}
+				/>
+			</div>
+			<!-- The handle rides the panel's inner edge, so the sidebar and the logs meet at one border. -->
 			<ColumnResizer
 				label="Resize group list"
 				width={sidebarPx}
@@ -725,25 +742,31 @@
 				testId="sidebar-resizer"
 				onChange={(next) => (sidebarPx = next)}
 				onCommit={() => saveSidebarWidth()}
-				class="w-full"
+				class="absolute inset-y-0 -right-1 z-10 hidden w-2 lg:block"
 			/>
 		{/if}
-		<button
-			type="button"
-			onclick={toggleSidebar}
-			aria-expanded={sidebarOpen}
-			aria-controls="log-group-sidebar"
-			title={sidebarOpen ? 'Hide the group list' : 'Show the group list'}
-			data-testid="sidebar-seam-toggle"
-			class="absolute top-2 left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900 text-[0.6875rem] leading-none text-neutral-400 transition-colors hover:border-sky-600 hover:text-sky-300"
-		>
-			{#if sidebarOpen}
-				<PanelLeftClose class="size-3.5" />
-			{:else}
-				<PanelLeftOpen class="size-3.5" />
-			{/if}
-		</button>
 	</div>
+
+	{#if !sidebarOpen}
+		<!-- Folded away: the narrow rail keeps the way back on the left edge. Narrow screens keep the
+		     header above instead, so this rail is wide-only. -->
+		<div
+			class="hidden w-8 shrink-0 flex-col items-center border-r border-neutral-800 bg-neutral-950/60 py-2 lg:flex"
+			data-testid="sidebar-seam"
+		>
+			<button
+				type="button"
+				onclick={toggleSidebar}
+				aria-expanded={sidebarOpen}
+				aria-controls="log-group-sidebar"
+				title="Show the group list"
+				data-testid="sidebar-expand"
+				class="flex size-6 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
+			>
+				<ChevronRight class="size-4" />
+			</button>
+		</div>
+	{/if}
 
 	<div class="flex min-h-0 min-w-0 flex-1 flex-col">
 		<EventScatterPanel
@@ -754,6 +777,7 @@
 			bucketMs={seriesBucketMs}
 			groups={selectedGroups}
 			byRequest={groupRequests}
+			fill={!logOpen}
 			metric={chartMetric}
 			onMetricChange={(metric) => {
 				chartSelection = null;
@@ -773,7 +797,9 @@
 		/>
 
 		{#if windowFrom !== null && windowTo !== null && mode === 'historic'}
-			<div class="flex flex-wrap items-center gap-2 text-[0.6875rem] text-neutral-500">
+			<div
+				class="flex flex-wrap items-center gap-2 border-b border-neutral-800 bg-neutral-950/60 px-3 py-1.5 text-[0.6875rem] text-neutral-500"
+			>
 				<span data-testid="brush-window">
 					zoomed to {new Date(windowFrom).toLocaleTimeString()} – {new Date(
 						windowTo,
@@ -807,6 +833,8 @@
 			onLevelChange={(next) => (levelFilter = next)}
 			{groupRequests}
 			onGroupToggle={toggleGroupRequests}
+			open={logOpen}
+			onToggle={toggleLog}
 			{filter}
 			paused={stream.paused}
 			{autoScroll}
@@ -826,3 +854,15 @@
 		/>
 	</div>
 </div>
+
+<style>
+	/*
+	 * The sidebar stacks above the panels below `lg`, where it spans the full width; only the wide
+	 * layout gives it the resizable column width held in `--sidebar-width`.
+	 */
+	@media (min-width: 64rem) {
+		#log-group-sidebar {
+			width: var(--sidebar-width);
+		}
+	}
+</style>

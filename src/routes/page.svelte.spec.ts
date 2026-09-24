@@ -435,49 +435,70 @@ describe('page: grouping by request', () => {
 });
 
 describe('page: collapsible group sidebar', () => {
-	it('collapses and expands the group list', async () => {
+	it('collapses the body from the group-list header and expands again', async () => {
 		setUrl('?region=us-east-1&group=/aws/app');
 		await renderPage();
 
 		expect(screen.getByTestId('sidebar')).toBeTruthy();
+		expect(screen.getByTestId('sidebar-body')).toBeTruthy();
 		expect(screen.getByTestId('sidebar-resizer')).toBeTruthy();
-		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('true');
+		expect(screen.getByTestId('sidebar-collapse').getAttribute('aria-expanded')).toBe('true');
 
-		await fireEvent.click(screen.getByTestId('sidebar-toggle'));
+		await fireEvent.click(screen.getByTestId('sidebar-collapse'));
 
-		expect(screen.queryByTestId('sidebar')).toBeNull();
+		// The header stays; only the content folds away.
+		expect(screen.getByTestId('sidebar-collapse').getAttribute('aria-expanded')).toBe('false');
+		expect(screen.queryByTestId('sidebar-body')).toBeNull();
 		expect(screen.queryByTestId('sidebar-resizer')).toBeNull();
-		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('false');
 		expect(localStorage.getItem('watch-tail:sidebar-open')).toBe('false');
+		// The wide rail takes over as the way back on wide screens.
+		expect(screen.getByTestId('sidebar-expand').getAttribute('aria-expanded')).toBe('false');
 
-		await fireEvent.click(screen.getByTestId('sidebar-toggle'));
-		expect(screen.getByTestId('sidebar')).toBeTruthy();
-		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('true');
+		await fireEvent.click(screen.getByTestId('sidebar-expand'));
+		expect(screen.getByTestId('sidebar-body')).toBeTruthy();
+		expect(screen.getByTestId('sidebar-collapse').getAttribute('aria-expanded')).toBe('true');
 		expect(localStorage.getItem('watch-tail:sidebar-open')).toBe('true');
 	});
 
-	it('collapses from the chevron on the sidebar seam', async () => {
-		setUrl('?region=us-east-1&group=/aws/app');
-		await renderPage();
-
-		expect(screen.getByTestId('sidebar-seam-toggle').getAttribute('aria-expanded')).toBe('true');
-		await fireEvent.click(screen.getByTestId('sidebar-seam-toggle'));
-
-		expect(screen.queryByTestId('sidebar')).toBeNull();
-		expect(screen.getByTestId('sidebar-seam-toggle').getAttribute('aria-expanded')).toBe('false');
-
-		await fireEvent.click(screen.getByTestId('sidebar-seam-toggle'));
-		expect(screen.getByTestId('sidebar')).toBeTruthy();
-	});
-
-	it('starts collapsed when the stored preference says so, leaving the log view in place', async () => {
+	it('starts collapsed when the stored preference says so, keeping the header', async () => {
 		localStorage.setItem('watch-tail:sidebar-open', 'false');
 		setUrl('?region=us-east-1&group=/aws/app');
 		await renderPage();
 
-		expect(screen.queryByTestId('sidebar')).toBeNull();
-		expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('false');
-		// The log view and its toolbar survive folding the sidebar away.
+		expect(screen.queryByTestId('sidebar-body')).toBeNull();
+		expect(screen.getByTestId('sidebar-collapse').getAttribute('aria-expanded')).toBe('false');
+		// The log view and its toolbar survive folding the sidebar body away.
 		expect(screen.getByTestId('log-scroller')).toBeTruthy();
+	});
+});
+
+describe('page: collapsible log lines', () => {
+	it('collapses the lines from the viewer header and remembers the choice', async () => {
+		setUrl('?region=us-east-1&group=/aws/app');
+		await renderPage();
+
+		expect(screen.getByTestId('log-scroller')).toBeTruthy();
+		expect(screen.getByTestId('log-toggle').getAttribute('aria-expanded')).toBe('true');
+
+		await fireEvent.click(screen.getByTestId('log-toggle'));
+
+		expect(screen.queryByTestId('log-scroller')).toBeNull();
+		expect(screen.getByTestId('log-toggle').getAttribute('aria-expanded')).toBe('false');
+		expect(localStorage.getItem('watch-tail:log-open')).toBe('false');
+
+		await fireEvent.click(screen.getByTestId('log-toggle'));
+		expect(screen.getByTestId('log-scroller')).toBeTruthy();
+		expect(localStorage.getItem('watch-tail:log-open')).toBe('true');
+	});
+
+	it('starts collapsed when the stored preference says so', async () => {
+		localStorage.setItem('watch-tail:log-open', 'false');
+		setUrl('?region=us-east-1&group=/aws/app');
+		await renderPage();
+
+		expect(screen.queryByTestId('log-scroller')).toBeNull();
+		expect(screen.getByTestId('log-toggle').getAttribute('aria-expanded')).toBe('false');
+		// Status and counts stay in the header while the lines are folded away.
+		expect(screen.getByTestId('visible-count')).toBeTruthy();
 	});
 });
