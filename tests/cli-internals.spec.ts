@@ -88,6 +88,21 @@ function regionIo(env: NodeJS.ProcessEnv, configText = ''): CliIo {
 		startServerImpl: (() => {
 			throw new Error('not used');
 		}) as CliIo['startServerImpl'],
+		stopServerImpl: (async () => 0) as CliIo['stopServerImpl'],
+		findFreePort: async () => 4519,
+		serveMcp: (async () => undefined) as CliIo['serveMcp'],
+		stdin: { async *[Symbol.asyncIterator]() {} },
+		mcpStdout: { write: () => true },
+		agentFs: {
+			home: '/home/dev',
+			platform: 'linux',
+			cwd: '/work',
+			exists: () => false,
+			commandExists: () => false,
+			readFile: () => '',
+			writeFile: () => undefined,
+			ensureDir: () => undefined,
+		},
 		spawnImpl: (() => {
 			throw new Error('not used');
 		}) as CliIo['spawnImpl'],

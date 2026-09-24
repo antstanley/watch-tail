@@ -215,3 +215,72 @@ describe('parseCliArgs: local history flags', () => {
 		expect(usage).toContain('DuckDB');
 	});
 });
+
+describe('parseCliArgs: the MCP entry points', () => {
+	it('defaults to the browser UI', () => {
+		expect(optionsOf([]).command).toBe('serve');
+	});
+
+	it('selects the headless server with `mcp`', () => {
+		const options = optionsOf(['mcp']);
+		expect(options.command).toBe('mcp');
+		expect(options.mcpServer.url).toBeNull();
+	});
+
+	it('accepts --url to attach to a running server', () => {
+		expect(optionsOf(['mcp', '--url', 'http://127.0.0.1:4517']).mcpServer.url).toBe(
+			'http://127.0.0.1:4517',
+		);
+	});
+
+	it('selects the initialiser with `mcp init`', () => {
+		expect(optionsOf(['mcp', 'init']).command).toBe('mcp-init');
+	});
+
+	it('collects the init options', () => {
+		const options = optionsOf([
+			'mcp',
+			'init',
+			'--agent',
+			'cursor, codex',
+			'--yes',
+			'--scope',
+			'project',
+			'--command',
+			'node',
+			'--args=-y watch-tail',
+		]);
+		expect(options.mcpInit).toEqual({
+			agents: ['cursor', 'codex'],
+			yes: true,
+			print: false,
+			scope: 'project',
+			command: 'node',
+			args: ['-y', 'watch-tail'],
+		});
+	});
+
+	it('shares the server flags with the mcp command', () => {
+		const options = optionsOf(['mcp', '--profile', 'acme', '--region', 'eu-west-1', '--floci']);
+		expect(options.profile).toBe('acme');
+		expect(options.region).toBe('eu-west-1');
+		expect(options.endpoint).toBe(FLOCI_ENDPOINT);
+	});
+
+	it('rejects an unknown scope', () => {
+		expect(errorOf(['mcp', 'init', '--scope', 'everywhere'])).toContain('--scope');
+	});
+
+	it('rejects stray words after mcp', () => {
+		expect(errorOf(['mcp', 'serve'])).toContain('serve');
+	});
+
+	it('documents the mcp entry points', () => {
+		const usage = usageText();
+		expect(usage).toContain('watch-tail mcp');
+		expect(usage).toContain('watch-tail mcp init');
+		expect(usage).toContain('--agent');
+		expect(usage).toContain('--yes');
+		expect(usage).toContain('--scope');
+	});
+});

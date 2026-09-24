@@ -70,6 +70,16 @@ describe('completion protocol', () => {
 	it('offers the subcommands for a bare word', () => {
 		const output = complete(['--', '']);
 		expect(output).toContain('complete');
+		expect(output).toContain('mcp');
+	});
+
+	it('offers the mcp init subcommand and its flags', () => {
+		expect(complete(['--', 'mcp', ''])).toContain('init');
+		const flags = complete(['--', 'mcp', '--']);
+		for (const flag of ['--url', '--agent', '--yes', '--scope', '--command', '--args']) {
+			expect(flags).toContain(flag);
+		}
+		expect(complete(['--', 'mcp', '--agent='])).toContain('cursor');
 	});
 
 	it('completes the shell names after `complete`', () => {

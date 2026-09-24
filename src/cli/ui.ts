@@ -12,6 +12,7 @@ import {
 	intro,
 	isCancel,
 	log,
+	multiselect,
 	outro,
 	spinner,
 } from '@clack/prompts';
@@ -51,6 +52,17 @@ export type Ui = {
 		options: { value: string; label?: string }[],
 		initial?: string | null,
 	): Promise<string | null>;
+	/**
+	 * Asks for several values from `options`.
+	 *
+	 * Resolves `[]` when there is nothing to ask or the run is not interactive.
+	 * Throws {@link PromptCancelled} when the user cancels.
+	 */
+	multiChoose(
+		message: string,
+		options: { value: string; label?: string }[],
+		initial?: string[],
+	): Promise<string[]>;
 	/**
 	 * Asks a yes/no question; a non-interactive run always answers `false`.
 	 *
@@ -97,6 +109,7 @@ export function createUi(options: { interactive?: boolean } = {}): Ui {
 				const fallback = initial ?? choices[0]?.value ?? null;
 				return fallback;
 			},
+			multiChoose: async () => [],
 			confirm: async () => false,
 		};
 	}
@@ -129,6 +142,23 @@ export function createUi(options: { interactive?: boolean } = {}): Ui {
 				throw new PromptCancelled();
 			}
 			return String(answer);
+		},
+		multiChoose: async (message, choices, initial) => {
+			if (choices.length === 0) return [];
+			const answer = await multiselect({
+				message,
+				options: choices.map((choice) => ({
+					value: choice.value,
+					label: choice.label ?? choice.value,
+				})),
+				initialValues: initial ?? choices.map((choice) => choice.value),
+				required: false,
+			});
+			if (isCancel(answer)) {
+				cancel('Cancelled.');
+				throw new PromptCancelled();
+			}
+			return (answer as unknown[]).map((value) => String(value));
 		},
 		confirm: async (message, initial = true) => {
 			const answer = await confirm({ message, initialValue: initial });

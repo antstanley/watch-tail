@@ -8,8 +8,9 @@
  * `$lib/cli/aws.ts`, and the side effects are injectable through {@link CliIo}.
  */
 import { type ChildProcess, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import {
 	buildChildEnv,
 	describeChildEnv,
@@ -31,9 +32,13 @@ import {
 	readProfileStyle,
 } from '../lib/cli/credentials.ts';
 import { handleCompletion } from './completions.ts';
+import { createHttpBackend } from './mcp/backend.ts';
+import { runMcpInit, runMcpServer, type McpInitDeps, type McpServerDeps } from './mcp/run.ts';
+import { serveMcp, type McpOutput } from './mcp/stdio.ts';
 import { isLoopbackHost, parseCliArgs, usageText, type CliOptions } from './options.ts';
 import {
 	appRootFromHere,
+	findFreePort,
 	healthUrl,
 	openBrowser as openBrowserDefault,
 	startServer,
@@ -54,6 +59,18 @@ import {
 	type IdentityProbe,
 } from './preflight.ts';
 import { PromptCancelled, createUi, isInteractive, type Ui } from './ui.ts';
+
+/** Filesystem and environment seam for `mcp init`. */
+type AgentIo = {
+	home: string;
+	platform: NodeJS.Platform;
+	cwd: string;
+	exists: (path: string) => boolean;
+	commandExists: (binary: string) => boolean;
+	readFile: (path: string) => string;
+	writeFile: (path: string, contents: string) => void;
+	ensureDir: (dir: string) => void;
+};
 
 /** Every side effect the CLI needs, so tests can run it in-process. */
 export type CliIo = {
@@ -88,6 +105,18 @@ export type CliIo = {
 	waitForHealth: typeof waitForHealth;
 	/** Used for tests that must not spawn a server. */
 	startServerImpl: typeof startServer;
+	/** Stops a server child; injected so MCP tests never signal a real process. */
+	stopServerImpl: typeof stopServer;
+	/** Asks the OS for a free port; the MCP server starts its own headless one. */
+	findFreePort: () => Promise<number>;
+	/** Runs the MCP stdio loop. */
+	serveMcp: typeof serveMcp;
+	/** Input the MCP server reads. */
+	stdin: AsyncIterable<Buffer | string> & { destroy?: () => void };
+	/** Output the MCP server writes; reserved for the protocol alone. */
+	mcpStdout: McpOutput;
+	/** Filesystem and host information for `mcp init`. */
+	agentFs: AgentIo;
 	spawnImpl: typeof spawn;
 	/** Resolves on the next SIGINT/SIGTERM (or when the child exits). */
 	waitForStop: (child: ChildProcess) => Promise<number>;
@@ -138,6 +167,23 @@ function waitForStop(child: ChildProcess): Promise<number> {
 	});
 }
 
+/** True when `binary` is an executable found on `PATH`. */
+function commandExists(
+	binary: string,
+	env: NodeJS.ProcessEnv = process.env,
+	exists: (path: string) => boolean = existsSync,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	const directories = (env.PATH ?? '').split(delimiter).filter((dir) => dir.length > 0);
+	const suffixes = platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
+	for (const directory of directories) {
+		for (const suffix of suffixes) {
+			if (exists(join(directory, `${binary}${suffix}`))) return true;
+		}
+	}
+	return false;
+}
+
 /** Real process environment for the CLI. */
 function defaultIo(): CliIo {
 	const appRoot = appRootFromHere();
@@ -159,6 +205,21 @@ function defaultIo(): CliIo {
 		readArchive: (input) => readArchiveDefault(input),
 		waitForHealth,
 		startServerImpl: startServer,
+		stopServerImpl: stopServer,
+		findFreePort,
+		serveMcp,
+		stdin: process.stdin,
+		mcpStdout: process.stdout,
+		agentFs: {
+			home: homedir(),
+			platform: process.platform,
+			cwd: process.cwd(),
+			exists: (path) => existsSync(path),
+			commandExists: (binary) => commandExists(binary),
+			readFile: (path) => readFileSync(path, 'utf8'),
+			writeFile: (path, contents) => writeFileSync(path, contents, 'utf8'),
+			ensureDir: (dir) => mkdirSync(dir, { recursive: true }),
+		},
 		spawnImpl: spawn,
 		waitForStop,
 	};
@@ -296,6 +357,79 @@ async function offerLogin(input: {
 	return { login: 'succeeded' };
 }
 
+/** Runs `watch-tail mcp`: a headless server an agent talks to over stdio. */
+async function runMcpWired(options: CliOptions, io: CliIo): Promise<number> {
+	const region = resolveCliRegion(options, io);
+	const profile = options.profile ?? ambientProfile(io.env);
+	let baseEnv = io.env;
+	if (options.endpoint === null) {
+		// Same guard as the browser path: a checkout's `.env.local` must not send
+		// an agent at the emulator unless `--floci` asked for it.
+		baseEnv = suppressLocalEnvValues({ env: io.env, values: io.readLocalEnvValues() }).env;
+	}
+	const childEnv = buildChildEnv({
+		base: baseEnv,
+		profile: options.profile,
+		region,
+		endpoint: options.endpoint,
+		clearStaticKeys: options.profile === null && profile !== null,
+		archive: { enabled: options.archive, path: options.db },
+	});
+
+	const deps: McpServerDeps = {
+		startServer: io.startServerImpl,
+		waitForHealth: io.waitForHealth,
+		stopServer: io.stopServerImpl,
+		findFreePort: io.findFreePort,
+		serve: io.serveMcp,
+		createBackend: createHttpBackend,
+		fetchImpl: fetch,
+	};
+	return runMcpServer(
+		{
+			version: io.version,
+			region,
+			url: options.mcpServer.url,
+			host: options.host,
+			port: options.portGiven ? options.port : null,
+			appRoot: io.appRoot,
+			childEnv,
+			input: io.stdin,
+			output: io.mcpStdout,
+			stderr: io.stderr,
+		},
+		deps,
+	);
+}
+
+/** Runs `watch-tail mcp init`: writes watch-tail into installed agent configs. */
+async function runMcpInitWired(options: CliOptions, io: CliIo): Promise<number> {
+	const ui = io.ui ?? createUi({ interactive: io.interactive });
+	const deps: McpInitDeps = {
+		ctx: {
+			home: io.agentFs.home,
+			platform: io.agentFs.platform,
+			env: io.env,
+			cwd: io.agentFs.cwd,
+		},
+		exists: io.agentFs.exists,
+		commandExists: io.agentFs.commandExists,
+		readFile: io.agentFs.readFile,
+		writeFile: io.agentFs.writeFile,
+		ensureDir: io.agentFs.ensureDir,
+		log: io.stdout,
+		warn: io.stderr,
+		chooseAgents: (message, choices, initial) => ui.multiChoose(message, choices, initial),
+	};
+	try {
+		return await runMcpInit({ version: io.version, options: options.mcpInit }, deps);
+	} catch (error) {
+		if (!(error instanceof PromptCancelled)) throw error;
+		ui.outro('stopped');
+		return 130;
+	}
+}
+
 /** Runs the CLI and returns its exit code. */
 export async function run(argv: string[], overrides: Partial<CliIo> = {}): Promise<number> {
 	const io: CliIo = { ...defaultIo(), ...overrides };
@@ -328,6 +462,13 @@ export async function run(argv: string[], overrides: Partial<CliIo> = {}): Promi
 		}
 		return 0;
 	}
+
+	// The MCP entry points are dispatched before the browser path resolves its
+	// region and environment: `mcp init` needs neither, and `mcp` resolves its own
+	// so a failure to start the headless server is reported on stderr, never on
+	// the stdout reserved for the protocol.
+	if (options.command === 'mcp-init') return runMcpInitWired(options, io);
+	if (options.command === 'mcp') return runMcpWired(options, io);
 
 	const region = resolveCliRegion(options, io);
 	// `--profile` wins, then the ambient AWS_PROFILE: the credential check and

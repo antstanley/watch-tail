@@ -9,8 +9,9 @@ function recorder(
 	options: {
 		confirm?: boolean[];
 		choose?: (string | null)[];
+		multi?: string[][];
 		/** Which prompt the user cancels with Ctrl+C, if any. */
-		cancel?: 'choose' | 'confirm';
+		cancel?: 'choose' | 'confirm' | 'multi';
 	} = {},
 ): Ui & { lines: string[]; asked: string[]; choices: string[] } {
 	const lines: string[] = [];
@@ -18,6 +19,7 @@ function recorder(
 	const choices: string[] = [];
 	const confirms = [...(options.confirm ?? [])];
 	const chosen = [...(options.choose ?? [])];
+	const multi = [...(options.multi ?? [])];
 	const push = (text: string) => lines.push(text);
 	return {
 		choices,
@@ -36,6 +38,12 @@ function recorder(
 			if (options.cancel === 'choose') throw new PromptCancelled();
 			if (chosen.length > 0) return chosen.shift() as string | null;
 			return initial ?? items[0]?.value ?? null;
+		},
+		multiChoose: async (message, items, initial) => {
+			asked.push(message);
+			if (options.cancel === 'multi') throw new PromptCancelled();
+			if (multi.length > 0) return multi.shift() as string[];
+			return initial ?? items.map((item) => item.value);
 		},
 		confirm: async (message) => {
 			asked.push(message);
@@ -783,5 +791,102 @@ describe('run: cancelling a prompt with Ctrl+C', () => {
 
 		expect(code).toBe(0);
 		expect(ui.lines.join('\n')).not.toContain('still failing');
+	});
+});
+
+/** An `agentFs` double where Cursor and Codex are installed. */
+function agentFs(): Partial<CliIo>['agentFs'] & { files: Map<string, string> } {
+	const files = new Map<string, string>();
+	return {
+		files,
+		home: '/home/dev',
+		platform: 'linux',
+		cwd: '/work/project',
+		exists: (path) => path === '/home/dev/.cursor' || path === '/home/dev/.codex',
+		commandExists: () => false,
+		readFile: (path) => {
+			const contents = files.get(path);
+			if (contents === undefined) throw new Error('ENOENT');
+			return contents;
+		},
+		writeFile: (path, contents) => files.set(path, contents),
+		ensureDir: () => undefined,
+	};
+}
+
+describe('run: the MCP entry points', () => {
+	it('starts a private headless server for `mcp`', async () => {
+		const h = harness();
+		const stopped: string[] = [];
+		const served: unknown[] = [];
+		h.io.findFreePort = async () => 4601;
+		h.io.stopServerImpl = (async () => {
+			stopped.push('stop');
+			return 0;
+		}) as CliIo['stopServerImpl'];
+		h.io.serveMcp = (async (options) => {
+			served.push(options);
+		}) as CliIo['serveMcp'];
+		h.io.stdin = { async *[Symbol.asyncIterator]() {} };
+		h.io.mcpStdout = { write: () => true };
+
+		expect(await run(['mcp', '--profile', 'acme-prod'], h.io)).toBe(0);
+
+		expect(h.started).toHaveLength(1);
+		expect(h.started[0]?.port).toBe(4601);
+		expect(h.started[0]?.env.AWS_PROFILE).toBe('acme-prod');
+		expect(served).toHaveLength(1);
+		expect(stopped).toHaveLength(1);
+	});
+
+	it('writes detected agents for `mcp init --yes`', async () => {
+		const h = harness();
+		const fs = agentFs();
+		h.io.agentFs = fs;
+
+		expect(await run(['mcp', 'init', '--yes'], h.io)).toBe(0);
+		expect([...fs.files.keys()].toSorted()).toEqual([
+			'/home/dev/.codex/config.toml',
+			'/home/dev/.cursor/mcp.json',
+		]);
+		expect(h.err).toHaveLength(0);
+	});
+
+	it('prints the configuration for `mcp init --print` without writing', async () => {
+		const h = harness();
+		const fs = agentFs();
+		h.io.agentFs = fs;
+
+		expect(await run(['mcp', 'init', '--print'], h.io)).toBe(0);
+		expect(fs.files.size).toBe(0);
+		expect(h.out.join('\n')).toContain('watch-tail@1.2.3');
+	});
+
+	it('writes only the agent the user selects', async () => {
+		const h = harness();
+		const fs = agentFs();
+		h.io.agentFs = fs;
+		h.io.ui = recorder({ multi: [['codex']] });
+
+		expect(await run(['mcp', 'init'], h.io)).toBe(0);
+		expect([...fs.files.keys()]).toEqual(['/home/dev/.codex/config.toml']);
+	});
+
+	it('reports an unknown agent id with exit code 2', async () => {
+		const h = harness();
+		h.io.agentFs = agentFs();
+
+		expect(await run(['mcp', 'init', '--agent', 'nope', '--yes'], h.io)).toBe(2);
+		expect(h.err.join('\n')).toContain('unknown agent');
+	});
+
+	it('turns a cancelled agent picker into a stop, not a failure', async () => {
+		const h = harness();
+		const fs = agentFs();
+		h.io.agentFs = fs;
+		h.io.ui = recorder({ cancel: 'multi' });
+
+		expect(await run(['mcp', 'init'], h.io)).toBe(130);
+		expect(fs.files.size).toBe(0);
 	});
 });
