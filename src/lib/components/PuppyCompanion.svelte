@@ -34,6 +34,8 @@
 	let dragging = $state(false);
 	/** Set by a drag so the click that ends it is not taken as a click on the puppy. */
 	let dragEnded = false;
+	/** The one pointer carrying the puppy; any other pointer is ignored until it lets go. */
+	let carrier: number | null = null;
 	let grab = { x: 0, y: 0 };
 	let pressedAt = { x: 0, y: 0 };
 
@@ -59,12 +61,25 @@
 
 	onMount(() => puppy.restore());
 
+	// Sent away mid-drag (the header button, pressed with another finger): drop nothing.
+	$effect(() => {
+		if (!puppy.shown) cancelDrag();
+	});
+
 	function clamp(value: number, min: number, max: number): number {
 		return Math.min(Math.max(value, min), Math.max(min, max));
 	}
 
+	/** Puts the puppy back in its slot without moving it anywhere. */
+	function cancelDrag(): void {
+		held = null;
+		dragging = false;
+		carrier = null;
+	}
+
 	function onpointerdown(event: PointerEvent): void {
-		if (event.button !== 0) return;
+		// A second pointer can't take over, or restart, a drag already under way.
+		if (event.button !== 0 || held !== null) return;
 		// No text selection or native drag while the puppy is carried.
 		event.preventDefault();
 		// Keep receiving the pointer (and the grabbing cursor) however fast it moves.
@@ -73,14 +88,22 @@
 		} catch {
 			// Capture is a nicety; the window listeners still see every move.
 		}
-		grab = { x: event.clientX - home.x, y: event.clientY - home.y };
+		// Grab it where it is drawn, which differs from its slot while it springs into one.
+		const drawn = (event.currentTarget as HTMLElement).getBoundingClientRect();
+		grab = { x: event.clientX - drawn.left, y: event.clientY - drawn.top };
 		pressedAt = { x: event.clientX, y: event.clientY };
 		dragEnded = false;
-		held = { ...home };
+		carrier = event.pointerId;
+		held = { x: drawn.left, y: drawn.top };
 	}
 
 	function onpointermove(event: PointerEvent): void {
-		if (held === null) return;
+		if (held === null || event.pointerId !== carrier) return;
+		// The release went missing (a context menu can swallow it): no button, no drag.
+		if ((event.buttons & 1) === 0) {
+			cancelDrag();
+			return;
+		}
 		const travel = Math.hypot(event.clientX - pressedAt.x, event.clientY - pressedAt.y);
 		if (!dragging && travel < DRAG_THRESHOLD) return;
 		dragging = true;
@@ -90,21 +113,27 @@
 		};
 	}
 
-	function onpointerup(): void {
-		if (held === null) return;
+	function onpointerup(event: PointerEvent): void {
+		if (held === null || event.pointerId !== carrier) return;
 		if (dragging) {
 			puppy.moveTo(landing);
 			// A happy wag for the new spot.
 			puppy.wag();
+			// Swallow only the click that belongs to this release, which is dispatched
+			// in the same task; a touch drag has none, so the flag must not linger.
 			dragEnded = true;
+			setTimeout(() => (dragEnded = false), 0);
 		}
-		held = null;
-		dragging = false;
+		cancelDrag();
 	}
 
-	function onpointercancel(): void {
-		held = null;
-		dragging = false;
+	function onpointercancel(event: PointerEvent): void {
+		if (event.pointerId === carrier) cancelDrag();
+	}
+
+	/** Capture lost without a release (the element or window lost the pointer): cancel. */
+	function onlostpointercapture(event: PointerEvent): void {
+		if (event.pointerId === carrier) cancelDrag();
 	}
 
 	/** A click that was not the end of a drag: an excited burst of wagging. */
@@ -167,6 +196,7 @@
 		data-testid="puppy-companion"
 		data-slot={puppy.slot}
 		{onpointerdown}
+		{onlostpointercapture}
 		{onclick}
 		{onkeydown}
 	>

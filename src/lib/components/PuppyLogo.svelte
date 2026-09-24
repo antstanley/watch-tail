@@ -81,15 +81,44 @@
 			excitePending,
 	);
 
+	/**
+	 * True while the reader asks for reduced motion. The stylesheet already keeps the
+	 * tail still, but a still tail never ends a cycle, so nothing may queue up either:
+	 * wags asked for meanwhile are dropped, not saved for later.
+	 */
+	let reducedMotion = $state(false);
+
+	/** Back to rest, forgetting any wags still owed. */
+	function settle(): void {
+		bursts = 0;
+		excitedLeft = 0;
+		excitePending = false;
+		excited = false;
+		active = false;
+	}
+
 	$effect(() => {
-		if (wants) active = true;
+		if (typeof window.matchMedia !== 'function') return;
+		const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const update = (): void => {
+			const reduce = query.matches;
+			reducedMotion = reduce;
+			if (reduce) settle();
+		};
+		update();
+		query.addEventListener('change', update);
+		return () => query.removeEventListener('change', update);
+	});
+
+	$effect(() => {
+		if (wants && !reducedMotion) active = true;
 	});
 
 	// Each new pulse value buys two more full wags.
 	let seenPulse: number | undefined;
 	$effect(() => {
 		const p = pulse;
-		if (seenPulse !== undefined && p !== seenPulse) bursts = 2;
+		if (seenPulse !== undefined && p !== seenPulse && !untrack(() => reducedMotion)) bursts = 2;
 		seenPulse = p;
 	});
 
@@ -99,7 +128,7 @@
 	let seenExcite: number | undefined;
 	$effect(() => {
 		const e = excite;
-		if (seenExcite !== undefined && e !== seenExcite) {
+		if (seenExcite !== undefined && e !== seenExcite && !untrack(() => reducedMotion)) {
 			if (untrack(() => active)) excitePending = true;
 			else {
 				excited = true;

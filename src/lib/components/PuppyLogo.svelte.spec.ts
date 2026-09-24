@@ -1,10 +1,34 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import PuppyLogo from './PuppyLogo.svelte';
 
 // Auto-cleanup only runs when vitest globals are enabled, which they are not here.
-afterEach(() => cleanup());
+afterEach(() => {
+	cleanup();
+	vi.restoreAllMocks();
+});
+
+/** A reduced-motion preference the test can flip, as the operating system would. */
+function motionPreference(reduce: boolean): { set: (next: boolean) => void } {
+	const listeners = new Set<() => void>();
+	const query = {
+		get matches() {
+			return reduce;
+		},
+		addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+		removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+	};
+	vi.spyOn(window, 'matchMedia').mockReturnValue(query as unknown as MediaQueryList);
+	return {
+		set(next) {
+			reduce = next;
+			for (const listener of listeners) listener();
+		},
+	};
+}
+
+const excitedNow = () => logo().classList.contains('excited');
 
 /** The logo's root `<svg>`. */
 function logo(): SVGSVGElement {
@@ -83,6 +107,84 @@ describe('PuppyLogo', () => {
 		expect(logo().classList.contains('excited')).toBe(false);
 		await finishCycle();
 		expect(logo().classList.contains('excited')).toBe(true);
+		expect(wagging()).toBe(true);
+	});
+
+	it('starts the excited count again when excited mid-burst, switching at the next centre', async () => {
+		const view = render(PuppyLogo, { props: { wag: 'off', excite: 0 } });
+		await tick();
+		await view.rerender({ excite: 1 });
+		for (let cycle = 0; cycle < 3; cycle += 1) await finishCycle();
+		await view.rerender({ excite: 2 });
+
+		// One cycle to reach centre, then five fresh excited wags.
+		for (let cycle = 0; cycle < 5; cycle += 1) await finishCycle();
+		expect(excitedNow()).toBe(true);
+		await finishCycle();
+		expect(excitedNow()).toBe(false);
+		expect(wagging()).toBe(false);
+	});
+
+	it('hands back to the calm wag after an excited burst when it wags always', async () => {
+		const view = render(PuppyLogo, { props: { wag: 'always', excite: 0 } });
+		await tick();
+		await view.rerender({ excite: 1 });
+		expect(excitedNow()).toBe(false);
+		await finishCycle();
+		expect(excitedNow()).toBe(true);
+		for (let cycle = 0; cycle < 5; cycle += 1) await finishCycle();
+		expect(excitedNow()).toBe(false);
+		expect(wagging()).toBe(true);
+	});
+
+	it('lets a pulse during an excited burst run out alongside it', async () => {
+		const view = render(PuppyLogo, { props: { wag: 'off', pulse: 0, excite: 0 } });
+		await tick();
+		await view.rerender({ excite: 1 });
+		await view.rerender({ pulse: 1 });
+		for (let cycle = 0; cycle < 4; cycle += 1) await finishCycle();
+		expect(wagging()).toBe(true);
+		await finishCycle();
+		expect(wagging()).toBe(false);
+	});
+
+	it('neither wags nor saves up wags while reduced motion is on', async () => {
+		const preference = motionPreference(true);
+		const view = render(PuppyLogo, { props: { wag: 'off', pulse: 0, excite: 0 } });
+		await tick();
+		await view.rerender({ pulse: 1 });
+		await view.rerender({ excite: 1 });
+		expect(wagging()).toBe(false);
+
+		// Nothing owed plays once motion is allowed again.
+		preference.set(false);
+		await tick();
+		expect(wagging()).toBe(false);
+	});
+
+	it('stops at once and forgets owed wags when reduced motion is switched on mid-wag', async () => {
+		const preference = motionPreference(false);
+		const view = render(PuppyLogo, { props: { wag: 'off', pulse: 0, excite: 0 } });
+		await tick();
+		await view.rerender({ pulse: 1 });
+		await view.rerender({ excite: 1 });
+		expect(wagging()).toBe(true);
+
+		preference.set(true);
+		await tick();
+		expect(wagging()).toBe(false);
+		preference.set(false);
+		await tick();
+		expect(wagging()).toBe(false);
+	});
+
+	it('resumes an always-on wag once reduced motion is switched off', async () => {
+		const preference = motionPreference(true);
+		render(PuppyLogo, { props: { wag: 'always' } });
+		await tick();
+		expect(wagging()).toBe(false);
+		preference.set(false);
+		await tick();
 		expect(wagging()).toBe(true);
 	});
 

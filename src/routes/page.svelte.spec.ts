@@ -548,9 +548,13 @@ describe('page: the puppy companion', () => {
 	it('stays quiet while it is hidden', async () => {
 		setUrl('?region=us-east-1&group=/aws/app');
 		await renderPage();
-		FakeEventSource.latest?.emit('log', {
+		const stream = FakeEventSource.latest;
+		if (stream === null) throw new Error('the page never opened the stream');
+		stream.emit('log', {
 			events: [{ id: 'e1', timestamp: Date.now(), message: 'hello', streamName: 's' }],
 		});
+		// The line really arrived, so a wag was asked for, and dropped.
+		await waitFor(() => expect(screen.getByText('hello')).toBeTruthy());
 		await fireEvent.click(screen.getByTestId('sidebar-collapse'));
 		await fireEvent.click(screen.getByTestId('log-toggle'));
 		expect(puppy.pulse).toBe(0);
