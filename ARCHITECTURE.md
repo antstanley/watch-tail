@@ -233,17 +233,27 @@ gaps. The archive holds only what was streamed, so the boundary is not a single 
 watermark would skip the periods watch-tail was not running - but the **coverage** recorded in
 `archive_coverage`: the ranges watch-tail can prove it queried and archived for a group.
 
-- A scan records coverage only when it can be trusted: a completed, **unfiltered** CloudWatch scan.
-  A `filterPattern` archives a subset of a range, so it is never recorded, and a live tail records
-  each poll that succeeded (via `onPoll` in `tail.ts`) rather than the whole session.
+- Coverage is reported by the tailer itself. `tailLogEvents` reads in **sweeps**: one
+  `FilterLogEvents` query from the cursor, followed through every `nextToken` page (CloudWatch can
+  answer an empty page with a token while it is still searching). Only a finished sweep has read its
+  range, and with `reportCoverage` set it then yields a `coverage` batch (`start`, `end`, `readAt`)
+  **after** the sweep's events. The pump stores events as they arrive, so a range it sees is already
+  backed by rows; a batch dropped because the client left is followed by no range at all.
+- Only the part of a range that had **settled** is kept: CloudWatch can ingest an event well after
+  its timestamp, so a sweep sent at `readAt` is trusted up to `readAt - COVERAGE_SETTLE_MS` (five
+  minutes). The newest minutes of a window are always fetched from AWS again.
+- Coverage is only recorded for **unfiltered** reads (a `filterPattern` archives a subset of a
+  range), and not at all for a stream whose archive writes failed.
 - On a request, `resolveHybridFeed` intersects the window with each group's coverage: covered ranges
   are replayed with `tailArchivedEvents`, and the remaining ranges are fetched with `tailLogEvents`
   and merged by `mergeTails`. A window with no coverage behaves exactly as before (one CloudWatch
   scan); a fully covered window never constructs a CloudWatch request at all.
 - Replayed rows carry `origin: 'archive'` on their batch, so the pump archives only CloudWatch
   events and never writes archived rows back.
-- When the scan finishes its window, the ranges it read from CloudWatch are recorded as coverage, so
-  the next view of that window is answered entirely from the archive.
+- When the stream ends, for any reason, the settled ranges it read and stored are merged into
+  `archive_coverage`, so the next view of that window is answered from the archive.
+- `max` caps a historic CloudWatch view across all of its tails (groups, gaps and archived ranges),
+  and the pump ends it with `event-limit`.
 
 Windows and coverage are clipped to CloudWatch's 14 days, because the gaps are still fetched from
 AWS; the archive can hold ranges older than that, so `source=archive` remains the way to read beyond
@@ -361,7 +371,10 @@ here at all, because `seq` has a `nextval()` default that the appender refuses t
 
 Each account/region archive is a DuckDB file with a single writer: the server process holds the lock, statements are
 serialised through an internal queue, and a failure (a full disk, a locked file) is recorded and
-reported by `/api/archive` rather than interrupting a stream.
+reported by `/api/archive` rather than interrupting a stream. `WATCH_TAIL_ARCHIVE_IDLE_MS` makes a
+process release the file after that many idle milliseconds and reopen it for the next statement;
+`watch-tail mcp` sets it (5 s) for its private server, so an agent session holds the lock only while
+a tool call runs rather than for as long as the agent is open.
 
 Archive routing lives in `src/lib/server/archive-location.ts`. STS identifies the account before
 new CloudWatch streams write. The default layout is `<data-dir>/watch-tail/<account>/<region>/archive.duckdb`;

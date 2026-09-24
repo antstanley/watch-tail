@@ -1,9 +1,23 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { PROGRAM, SHELLS, completionScript } from '../src/cli/completions.ts';
-import { ambientProfile, readVersion, resolveCliRegion, type CliIo } from '../src/cli/index.ts';
+import {
+	ambientProfile,
+	readVersion,
+	resolveCliRegion,
+	writeFileAtomic,
+	type CliIo,
+} from '../src/cli/index.ts';
 import { browserCommand, findAppRoot } from '../src/cli/server.ts';
 import manifest from '../package.json' with { type: 'json' };
 import { describeArchive, readArchive } from '../src/cli/preflight.ts';
@@ -21,6 +35,38 @@ function tempDir(): string {
 
 afterAll(() => {
 	for (const dir of created) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('writeFileAtomic', () => {
+	it('replaces a file and leaves nothing behind', () => {
+		const dir = tempDir();
+		const path = join(dir, 'config.json');
+		writeFileSync(path, '{}');
+		writeFileAtomic(path, '{"a":1}\n');
+		expect(readFileSync(path, 'utf8')).toBe('{"a":1}\n');
+		expect(readdirSync(dir)).toEqual(['config.json']);
+	});
+
+	it.skipIf(process.platform === 'win32')('keeps the permissions of the file it replaces', () => {
+		const dir = tempDir();
+		const path = join(dir, 'private.json');
+		writeFileSync(path, '{}', { mode: 0o600 });
+		writeFileAtomic(path, '{"b":2}\n');
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	it('creates a file that did not exist', () => {
+		const dir = tempDir();
+		const path = join(dir, 'new.json');
+		writeFileAtomic(path, 'x');
+		expect(readFileSync(path, 'utf8')).toBe('x');
+	});
+
+	it('cleans up and throws when the directory is missing', () => {
+		const dir = tempDir();
+		expect(() => writeFileAtomic(join(dir, 'missing', 'a.json'), 'x')).toThrow(/ENOENT/);
+		expect(readdirSync(dir)).toEqual([]);
+	});
 });
 
 describe('findAppRoot', () => {

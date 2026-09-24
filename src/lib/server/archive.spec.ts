@@ -6,6 +6,7 @@ import {
 	ARCHIVE_FILE_NAME,
 	LOCK_RETRIES,
 	LogArchive,
+	archiveIdleReleaseMs,
 	describeOpenError,
 	loadDuckDbDriver,
 	resolveArchiveConfig,
@@ -43,6 +44,8 @@ function fakeDriver(
 	const calls: Call[] = [];
 	let closes = 0;
 	let connects = 0;
+	let creates = 0;
+	let instanceCloses = 0;
 	const connection: DriverConnection = {
 		async run(sql, params) {
 			const failure = options.failOn?.(sql) ?? null;
@@ -61,10 +64,14 @@ function fakeDriver(
 		DuckDBInstance: {
 			create: async () => {
 				if (options.createFails !== undefined) throw new Error(options.createFails);
+				creates += 1;
 				return {
 					connect: async () => {
 						connects += 1;
 						return connection;
+					},
+					closeSync() {
+						instanceCloses += 1;
 					},
 				};
 			},
@@ -76,6 +83,8 @@ function fakeDriver(
 		statements: () => calls.map((call) => call.sql),
 		closes: () => closes,
 		connects: () => connects,
+		creates: () => creates,
+		instanceCloses: () => instanceCloses,
 	};
 }
 
@@ -402,7 +411,119 @@ describe('LogArchive reads', () => {
 		await archive.close();
 		await archive.close();
 		expect(fake.closes()).toBe(1);
+		// Closing the database, not only the connection, is what frees the file lock.
+		expect(fake.instanceCloses()).toBe(1);
 		expect(archive.available).toBe(false);
+	});
+
+	test('a failed page read says so instead of looking like an empty window', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+		});
+		// The page query is the only statement that fails.
+		const connection = await (await fake.driver.DuckDBInstance.create('')).connect();
+		const read = connection.runAndReadAll;
+		connection.runAndReadAll = async (sql, params) => {
+			if (sql.startsWith('SELECT region, log_group, log_stream')) {
+				throw new Error('IO Error: read failed');
+			}
+			return read(sql, params);
+		};
+		const page = await archive.page({
+			region: 'us-east-1',
+			logGroups: ['/g'],
+			startTime: 0,
+			endTime: 1,
+			search: null,
+			streamPrefix: null,
+			levels: null,
+			after: null,
+			limit: 10,
+		});
+		expect(page).toEqual({ events: [], last: null, error: 'IO Error: read failed' });
+	});
+});
+
+/** Waits on a real timer, for the idle release to fire (or not). */
+function pause(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+describe('LogArchive idle release', () => {
+	test('releases the file when idle and reopens it for the next statement', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+			idleReleaseMs: 20,
+		});
+		expect(fake.creates()).toBe(1);
+		await pause(60);
+		expect(fake.instanceCloses()).toBe(1);
+		// Still usable: the next statement opens the file again.
+		expect(archive.available).toBe(true);
+		expect(await archive.record('us-east-1', '/g', [event()])).toBe(1);
+		expect(fake.creates()).toBe(2);
+		await archive.close();
+	});
+
+	test('keeps the file while statements keep coming', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+			idleReleaseMs: 40,
+		});
+		for (let round = 0; round < 4; round += 1) {
+			await pause(15);
+			await archive.record('us-east-1', '/g', [event({ id: `e${round}` })]);
+		}
+		expect(fake.instanceCloses()).toBe(0);
+		await archive.close();
+	});
+
+	test('reports a lock taken while released, and recovers once it clears', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+			idleReleaseMs: 10,
+		});
+		await pause(40);
+		const create = fake.driver.DuckDBInstance.create;
+		fake.driver.DuckDBInstance.create = async () => {
+			throw new Error('IO Error: Could not set lock on file');
+		};
+		expect(await archive.record('us-east-1', '/g', [event()])).toBe(0);
+		expect(archive.error).toContain('locked by another process');
+		fake.driver.DuckDBInstance.create = create;
+		expect(await archive.record('us-east-1', '/g', [event()])).toBe(1);
+		await archive.close();
+	});
+
+	test('stays open without the option', async () => {
+		const fake = fakeDriver();
+		const archive = await LogArchive.open({
+			path: '/tmp/archive.duckdb',
+			load: async () => fake.driver,
+			ensureDir: () => undefined,
+		});
+		await pause(30);
+		expect(fake.instanceCloses()).toBe(0);
+		await archive.close();
+	});
+
+	test('reads the idle time from the environment', () => {
+		expect(archiveIdleReleaseMs({})).toBe(0);
+		expect(archiveIdleReleaseMs({ WATCH_TAIL_ARCHIVE_IDLE_MS: '5000' })).toBe(5000);
+		expect(archiveIdleReleaseMs({ WATCH_TAIL_ARCHIVE_IDLE_MS: 'soon' })).toBe(0);
+		expect(archiveIdleReleaseMs({ WATCH_TAIL_ARCHIVE_IDLE_MS: '-1' })).toBe(0);
 	});
 });
 

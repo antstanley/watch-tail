@@ -170,6 +170,18 @@ describe('createHttpBackend', () => {
 		expect(url.searchParams.get('filterPattern')).toBe('ERROR');
 	});
 
+	it('returns events oldest first, however the batches arrived', async () => {
+		const body = [
+			'event: log\ndata: {"events":[{"id":"b","timestamp":20,"message":"late"}]}\n\n',
+			'event: log\ndata: {"events":[{"id":"a","timestamp":10,"message":"early"},{"id":"c","timestamp":20,"message":"tie"}]}\n\n',
+			'event: end\ndata: {"reason":"window-complete"}\n\n',
+		].join('');
+		const { fetchImpl } = fakeFetch(() => new Response(body));
+		const backend = createHttpBackend({ baseUrl: 'http://x', fetchImpl });
+		const result = await backend.search({ region: null, groups: ['a', 'b'], source: 'cloudwatch' });
+		expect(result.events.map((event) => event.id)).toEqual(['a', 'b', 'c']);
+	});
+
 	it('flags a search that hit the event cap as truncated', async () => {
 		const { fetchImpl } = fakeFetch(new Response('event: end\ndata: {"reason":"event-limit"}\n\n'));
 		const backend = createHttpBackend({ baseUrl: 'http://x', fetchImpl });

@@ -23,7 +23,7 @@ function event(id: string | null, timestamp: number, message = 'line'): Filtered
 	return value;
 }
 
-type PollResult = { events: FilteredLogEvent[] } | Error;
+type PollResult = { events: FilteredLogEvent[]; nextToken?: string } | Error;
 type FakeSend = (command: unknown, options?: unknown) => Promise<unknown>;
 
 /** Fake client that returns each queued poll result in order, then empty pages. */
@@ -563,55 +563,122 @@ describe('historic windows', () => {
 	});
 });
 
+describe('tailLogEvents pagination', () => {
+	test('follows nextToken before calling an empty page the end of a window', async () => {
+		// CloudWatch can answer "nothing yet, keep going" while it is still searching.
+		const { client, send } = queueClient([
+			{ events: [], nextToken: 'page-2' },
+			{ events: [event('late', 4_000)] },
+		]);
+		const { batches } = await collect(
+			{ client, logGroupName: GROUP, startTime: 0, endTime: 5_000 },
+			(collected) => collected.some((batch) => batch.type === 'end'),
+		);
+		const events = batches.flatMap((batch) => (batch.type === 'events' ? batch.events : []));
+		expect(events.map((entry) => entry.id)).toEqual(['late']);
+		const second = send.mock.calls[1][0] as { input: { startTime: number; nextToken?: string } };
+		// A page of the same sweep keeps the sweep's start and carries the token.
+		expect(second.input).toMatchObject({ startTime: 0, nextToken: 'page-2' });
+	});
+
+	test('does not sleep between the pages of one sweep', async () => {
+		const { client, send } = queueClient([
+			{ events: [], nextToken: 'a' },
+			{ events: [], nextToken: 'b' },
+			{ events: [] },
+		]);
+		const controller = new AbortController();
+		const sleeps: number[] = [];
+		// The first sleep ends the live tail: every page before it belongs to one sweep.
+		const sleep = vi.fn<SleepFn>(async (ms: number) => {
+			sleeps.push(ms);
+			controller.abort();
+		});
+		const batches: TailBatch[] = [];
+		for await (const batch of tailLogEvents({
+			client,
+			logGroupName: GROUP,
+			startTime: 0,
+			pollIntervalMs: 500,
+			signal: controller.signal,
+			sleep,
+		})) {
+			batches.push(batch);
+		}
+		expect(batches).toEqual([]);
+		expect(send).toHaveBeenCalledTimes(3);
+		expect(sleeps).toEqual([500]);
+	});
+});
+
 describe('tailLogEvents coverage reporting', () => {
-	test('reports the range each historic poll covered', async () => {
+	test('reports a completed historic sweep after its events', async () => {
 		const { client } = queueClient([{ events: [event('a', 1_000)] }]);
-		const polls: [number, number][] = [];
-		await collect(
+		const { batches } = await collect(
 			{
 				client,
 				logGroupName: GROUP,
 				startTime: 0,
 				endTime: 5_000,
-				onPoll: (start, end) => polls.push([start, end]),
+				reportCoverage: true,
+				now: () => 9_000,
 			},
 			(collected) => collected.some((batch) => batch.type === 'end'),
 		);
-		expect(polls[0]).toEqual([0, 5_000]);
+		const types = batches.map((batch) => batch.type);
+		expect(types.indexOf('coverage')).toBeGreaterThan(types.indexOf('events'));
+		expect(batches.find((batch) => batch.type === 'coverage')).toEqual({
+			type: 'coverage',
+			start: 0,
+			end: 5_000,
+			readAt: 9_000,
+		});
 	});
 
-	test('a live poll reports up to now', async () => {
-		const before = Date.now();
+	test('a sweep never claims past the moment it was sent', async () => {
 		const { client } = queueClient([{ events: [event('a', 1_000)] }]);
-		const polls: [number, number][] = [];
-		await collect(
-			{
-				client,
-				logGroupName: GROUP,
-				startTime: 0,
-				onPoll: (start, end) => polls.push([start, end]),
-			},
-			(collected) => collected.length >= 1,
+		const { batches } = await collect(
+			{ client, logGroupName: GROUP, startTime: 0, reportCoverage: true, now: () => 3_000 },
+			(collected) => collected.some((batch) => batch.type === 'coverage'),
 		);
-		const [start, end] = polls[0];
-		expect(start).toBe(0);
-		expect(end).toBeGreaterThanOrEqual(before);
+		expect(batches.find((batch) => batch.type === 'coverage')).toMatchObject({
+			start: 0,
+			end: 3_000,
+		});
+	});
+
+	test('a sweep that is still paging reports nothing', async () => {
+		// A full page with a token has not read the rest of its range yet.
+		const { client } = queueClient([{ events: [event('a', 1_000)], nextToken: 'more' }]);
+		const { batches } = await collect(
+			{ client, logGroupName: GROUP, startTime: 0, endTime: 5_000, reportCoverage: true },
+			(collected) => collected.some((batch) => batch.type === 'events'),
+		);
+		expect(batches.some((batch) => batch.type === 'coverage')).toBe(false);
 	});
 
 	test('a failed poll never reports coverage', async () => {
 		const { client } = queueClient([new Error('boom')]);
-		const polls: [number, number][] = [];
-		await collect(
+		const { batches } = await collect(
 			{
 				client,
 				logGroupName: GROUP,
 				startTime: 0,
 				endTime: 5_000,
 				maxConsecutiveErrors: 1,
-				onPoll: (start, end) => polls.push([start, end]),
+				reportCoverage: true,
 			},
 			(collected) => collected.some((batch) => batch.type === 'end'),
 		);
-		expect(polls).toEqual([]);
+		expect(batches.some((batch) => batch.type === 'coverage')).toBe(false);
+	});
+
+	test('reports nothing unless asked', async () => {
+		const { client } = queueClient([{ events: [event('a', 1_000)] }]);
+		const { batches } = await collect(
+			{ client, logGroupName: GROUP, startTime: 0, endTime: 5_000 },
+			(collected) => collected.some((batch) => batch.type === 'end'),
+		);
+		expect(batches.some((batch) => batch.type === 'coverage')).toBe(false);
 	});
 });

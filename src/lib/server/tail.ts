@@ -19,6 +19,21 @@ export type TailBatch =
 			origin?: 'archive' | 'cloudwatch';
 	  }
 	| { type: 'error'; message: string; code?: string }
+	| {
+			/**
+			 * A range CloudWatch was fully read over, reported after the events it
+			 * produced, so a consumer that has stored those events can record it.
+			 * Only emitted when {@link TailOptions.reportCoverage} is set.
+			 */
+			type: 'coverage';
+			/** Inclusive range the sweep read, epoch ms. */
+			start: number;
+			end: number;
+			/** When the sweep's first request was sent, epoch ms. */
+			readAt: number;
+			/** Log group the range belongs to, added by a consumer that merges groups. */
+			group?: string;
+	  }
 	| { type: 'end'; reason: TailEndReason };
 
 /** Why a tail stopped on its own. */
@@ -49,14 +64,17 @@ export type TailOptions = {
 	/** Maximum events to yield before stopping (default 10000). */
 	maxEvents?: number;
 	/**
-	 * Called after every successful poll with the range that poll covered.
+	 * Yield a `coverage` batch after every completed sweep.
 	 *
-	 * CloudWatch is queried from the last cursor up to the window end (or now, for
-	 * a live tail), so this is what a caller records as archive coverage: a range
-	 * that was actually read, not one that merely looked read. A failed or aborted
-	 * poll never calls it.
+	 * A sweep is one query from the cursor followed through every `nextToken`
+	 * page, so its range (cursor to the window end, or to when it was sent) was
+	 * actually read, not one that merely looked read. The batch comes after the
+	 * sweep's events: a consumer that stores events as they arrive has stored
+	 * them by the time it sees the range. A failed or aborted sweep reports none.
 	 */
-	onPoll?: (start: number, end: number) => void;
+	reportCoverage?: boolean;
+	/** Clock, injectable so tests can pin the time a sweep was sent. */
+	now?: () => number;
 };
 
 const DEFAULT_SEEN_CAPACITY = 5000;
@@ -187,7 +205,9 @@ export function nextCursor(previous: number, events: LogEventDto[]): number {
  *
  * `startTime` is inclusive upstream, so the cursor advances to the newest
  * timestamp seen and repeated events are removed by {@link SeenEventIds}.
- * Nothing is new in a poll => sleep `pollIntervalMs`. Errors are yielded as
+ * A `nextToken` is followed straight away, so a sweep reads its whole range
+ * before the next one starts. Nothing is new in a sweep => sleep
+ * `pollIntervalMs`. Errors are yielded as
  * `error` batches and retried with exponential backoff
  * (`pollIntervalMs * 2^consecutiveErrors`, capped at 15000 ms) until
  * `maxConsecutiveErrors` (default 8) failures in a row, then the generator
@@ -208,7 +228,8 @@ export async function* tailLogEvents(options: TailOptions): AsyncGenerator<TailB
 		endTime = null,
 		idlePolls = DEFAULT_IDLE_POLLS,
 		maxEvents = DEFAULT_MAX_EVENTS,
-		onPoll,
+		reportCoverage = false,
+		now = Date.now,
 	} = options;
 
 	// A bounded window turns the endless poll loop into a finite scan.
@@ -254,22 +275,36 @@ export async function* tailLogEvents(options: TailOptions): AsyncGenerator<TailB
 	let consecutiveErrors = 0;
 	let emitted = 0;
 	let emptyPolls = 0;
+	// One sweep is a query from the cursor plus every page its `nextToken` leads
+	// to. CloudWatch can answer a page with no events and a token while it is
+	// still searching, so only a sweep without a token has read its whole range.
+	let sweepStart = cursor;
+	let sweepSentAt = 0;
+	let sweepHadEvents = false;
+	let nextToken: string | undefined;
 
 	for (;;) {
 		if (isAborted()) return;
 		try {
+			if (nextToken === undefined) {
+				sweepStart = cursor;
+				sweepSentAt = now();
+				sweepHadEvents = false;
+			}
 			// A fresh input per poll keeps recorded commands free of shared state.
-			const coveredFrom = cursor;
-			const input: FilterLogEventsCommandInput = { ...baseInput, startTime: cursor };
+			const input: FilterLogEventsCommandInput = { ...baseInput, startTime: sweepStart };
+			if (nextToken !== undefined) input.nextToken = nextToken;
 			const response = await client.send(new FilterLogEventsCommand(input), {
 				abortSignal: signal,
 			});
 			consecutiveErrors = 0;
-			// The poll read everything from the cursor to the window end (or to now).
-			onPoll?.(coveredFrom, windowEnd ?? Date.now());
+			nextToken =
+				typeof response.nextToken === 'string' && response.nextToken.length > 0
+					? response.nextToken
+					: undefined;
 			const events = selectNewEvents(response.events, seen);
 			if (events.length > 0) {
-				emptyPolls = 0;
+				sweepHadEvents = true;
 				cursor = nextCursor(cursor, events);
 				emitted += events.length;
 				yield { type: 'events', events };
@@ -277,14 +312,27 @@ export async function* tailLogEvents(options: TailOptions): AsyncGenerator<TailB
 					yield { type: 'end', reason: 'event-limit' };
 					return;
 				}
+			}
+			// More pages of this sweep: fetch them straight away.
+			if (nextToken !== undefined) continue;
+
+			if (reportCoverage) {
+				// Nothing newer than the moment the sweep was sent can have been read.
+				const end = windowEnd === null ? sweepSentAt : Math.min(windowEnd, sweepSentAt);
+				if (end >= sweepStart) {
+					yield { type: 'coverage', start: sweepStart, end, readAt: sweepSentAt };
+				}
+			}
+			if (sweepHadEvents) {
+				emptyPolls = 0;
 				if (windowEnd !== null && cursor >= windowEnd) {
 					yield { type: 'end', reason: 'window-complete' };
 					return;
 				}
 				continue;
 			}
-			// An empty page inside a historic window usually means the scan is done,
-			// but ingestion can lag, so a couple of empty polls are tolerated first.
+			// An empty sweep inside a historic window usually means the scan is done,
+			// but ingestion can lag, so a couple of empty sweeps are tolerated first.
 			if (historic) {
 				emptyPolls += 1;
 				if (emptyPolls >= idlePollsAllowed) {

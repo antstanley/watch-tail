@@ -8,7 +8,16 @@
  * `$lib/cli/aws.ts`, and the side effects are injectable through {@link CliIo}.
  */
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
@@ -184,6 +193,31 @@ function commandExists(
 	return false;
 }
 
+/**
+ * Replaces a file without ever leaving it half-written.
+ *
+ * `mcp init` edits files other programs own and rewrite (Claude Code keeps its
+ * whole state in `~/.claude.json`), so the new contents go to a temporary file
+ * beside it, take the original's permissions, and are renamed over it.
+ */
+export function writeFileAtomic(path: string, contents: string): void {
+	const temporary = `${path}.watch-tail-${process.pid}.tmp`;
+	let mode: number | null = null;
+	try {
+		mode = statSync(path).mode & 0o777;
+	} catch {
+		// A new file takes the default permissions.
+	}
+	try {
+		writeFileSync(temporary, contents, { encoding: 'utf8', mode: mode ?? 0o666 });
+		if (mode !== null) chmodSync(temporary, mode);
+		renameSync(temporary, path);
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
 /** Real process environment for the CLI. */
 function defaultIo(): CliIo {
 	const appRoot = appRootFromHere();
@@ -217,7 +251,7 @@ function defaultIo(): CliIo {
 			exists: (path) => existsSync(path),
 			commandExists: (binary) => commandExists(binary),
 			readFile: (path) => readFileSync(path, 'utf8'),
-			writeFile: (path, contents) => writeFileSync(path, contents, 'utf8'),
+			writeFile: (path, contents) => writeFileAtomic(path, contents),
 			ensureDir: (dir) => mkdirSync(dir, { recursive: true }),
 		},
 		spawnImpl: spawn,
@@ -357,6 +391,9 @@ async function offerLogin(input: {
 	return { login: 'succeeded' };
 }
 
+/** Idle time after which the MCP server's private watch-tail releases the archive file. */
+const MCP_ARCHIVE_IDLE_MS = 5000;
+
 /** Runs `watch-tail mcp`: a headless server an agent talks to over stdio. */
 async function runMcpWired(options: CliOptions, io: CliIo): Promise<number> {
 	const region = resolveCliRegion(options, io);
@@ -375,6 +412,10 @@ async function runMcpWired(options: CliOptions, io: CliIo): Promise<number> {
 		clearStaticKeys: options.profile === null && profile !== null,
 		archive: { enabled: options.archive, path: options.db },
 	});
+	// DuckDB lets one process hold the archive file. An agent session can last all
+	// day, so its private server releases the file between tool calls rather than
+	// locking the browser UI (or another agent) out of the archive.
+	childEnv.WATCH_TAIL_ARCHIVE_IDLE_MS = String(MCP_ARCHIVE_IDLE_MS);
 
 	const deps: McpServerDeps = {
 		startServer: io.startServerImpl,

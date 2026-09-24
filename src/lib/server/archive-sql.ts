@@ -465,6 +465,32 @@ export function subtractCoverage(
 	return uncovered;
 }
 
+/**
+ * How long CloudWatch is given to finish ingesting a moment before a read of it
+ * counts as complete.
+ *
+ * Events can be ingested well after their timestamp (agents batch and retry), so
+ * a range read at time `t` is only trusted up to `t - COVERAGE_SETTLE_MS`. The
+ * rest of the range is left uncovered and is fetched from CloudWatch again next
+ * time, which is what keeps a late event from being hidden behind the archive.
+ */
+export const COVERAGE_SETTLE_MS = 5 * 60_000;
+
+/**
+ * The part of a read range that had settled when it was read, or `null`.
+ *
+ * `readAt` is when the CloudWatch query started: anything newer than
+ * `readAt - settleMs` may still have been arriving.
+ */
+export function settleCoverage(
+	interval: CoverageInterval,
+	readAt: number,
+	settleMs: number = COVERAGE_SETTLE_MS,
+): CoverageInterval | null {
+	const settled = { start: interval.start, end: Math.min(interval.end, readAt - settleMs) };
+	return isUsableInterval(settled) ? settled : null;
+}
+
 /** Reads the coverage intervals of several groups that overlap a window. */
 export function buildCoverageQuery(
 	region: string,

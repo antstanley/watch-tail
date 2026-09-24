@@ -82,7 +82,11 @@ export type DriverConnection = {
 };
 
 /** Instance surface used by {@link LogArchive}. */
-export type DriverInstance = { connect: () => Promise<DriverConnection> };
+export type DriverInstance = {
+	connect: () => Promise<DriverConnection>;
+	/** Closes the database, releasing its file lock. */
+	closeSync?: () => void;
+};
 
 /** Driver surface used by {@link LogArchive}. */
 export type Driver = {
@@ -168,6 +172,18 @@ export function resolveArchiveConfig(
 	};
 }
 
+/**
+ * Idle milliseconds after which the archive file is released, from
+ * `WATCH_TAIL_ARCHIVE_IDLE_MS`; `0` (the default) keeps it open.
+ *
+ * `watch-tail mcp` sets it for its private server, so an agent session does not
+ * hold DuckDB's single-process lock for as long as the agent runs.
+ */
+export function archiveIdleReleaseMs(env: Record<string, string | undefined>): number {
+	const parsed = Number(env.WATCH_TAIL_ARCHIVE_IDLE_MS?.trim() ?? '');
+	return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 0;
+}
+
 /** Options accepted by {@link LogArchive.open}. */
 export type LogArchiveOptions = {
 	/** Database file to create or open. */
@@ -176,6 +192,13 @@ export type LogArchiveOptions = {
 	load?: DriverLoader;
 	/** Directory creator; injected by tests to avoid touching the filesystem. */
 	ensureDir?: (dir: string) => void;
+	/**
+	 * Close the file after this many idle milliseconds, and reopen it on the next
+	 * statement. DuckDB lets one process hold a file, so a process that only needs
+	 * the archive now and then (the headless MCP server) releases it in between
+	 * rather than locking out the browser UI. `0` or absent keeps it open.
+	 */
+	idleReleaseMs?: number;
 };
 
 /** What the UI and the CLI need to know about the archive. */
@@ -231,9 +254,18 @@ export class LogArchive {
 	/** Database file this archive uses. */
 	readonly path: string;
 	#connection: DriverConnection | null = null;
+	#instance: DriverInstance | null = null;
+	#driver: Driver | null = null;
 	#available = false;
 	#error: string | null = null;
 	#queue: Promise<unknown> = Promise.resolve();
+	/** Idle time before the file is released, or 0 to keep it open. */
+	#idleReleaseMs = 0;
+	#idleTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Statements queued or running, so the file is only released when none are. */
+	#pending = 0;
+	/** True while the file is closed by the idle release, to be reopened on demand. */
+	#released = false;
 
 	private constructor(path: string) {
 		this.path = path;
@@ -252,27 +284,17 @@ export class LogArchive {
 		const load: DriverLoader = options.load ?? loadDuckDbDriver;
 		const ensureDir: (dir: string) => void =
 			options.ensureDir ?? ((dir) => mkdirSync(dir, { recursive: true }));
+		const idle = options.idleReleaseMs ?? 0;
+		archive.#idleReleaseMs = Number.isFinite(idle) && idle > 0 ? Math.round(idle) : 0;
 		try {
 			ensureDir(dirname(options.path));
-			const driver = await load();
-			for (let attempt = 1; ; attempt += 1) {
-				try {
-					const instance = await driver.DuckDBInstance.create(options.path);
-					const connection = await instance.connect();
-					for (const statement of ARCHIVE_SCHEMA) await connection.run(statement);
-					archive.#connection = connection;
-					archive.#available = true;
-					// Rows written before `request_id` existed hold NULL, which is not a
-					// verdict for that column, so they are scanned once here. The call is
-					// guarded: a failure is reported on `error` and the open still succeeds.
-					await archive.#backfillRequestIds();
-					break;
-				} catch (error) {
-					// A server that just restarted may still be releasing the lock.
-					if (attempt >= LOCK_RETRIES || !isLockError(error)) throw error;
-					await delay(LOCK_RETRY_MS);
-				}
-			}
+			archive.#driver = await load();
+			await archive.#connect();
+			archive.#available = true;
+			// Rows written before `request_id` existed hold NULL, which is not a
+			// verdict for that column, so they are scanned once here. The call is
+			// guarded: a failure is reported on `error` and the open still succeeds.
+			await archive.#backfillRequestIds();
 		} catch (error) {
 			archive.#available = false;
 			archive.#error = describeOpenError(error, options.path);
@@ -303,6 +325,58 @@ export class LogArchive {
 		return this.#error;
 	}
 
+	/**
+	 * Opens the file and brings it up to the current schema.
+	 *
+	 * Used by the first open and by a reopen after an idle release. A lock held by
+	 * a process that is just exiting is retried briefly; any other failure throws.
+	 */
+	async #connect(): Promise<void> {
+		const driver = this.#driver;
+		if (driver === null) throw new Error('the DuckDB driver is not loaded');
+		for (let attempt = 1; ; attempt += 1) {
+			try {
+				const instance = await driver.DuckDBInstance.create(this.path);
+				const connection = await instance.connect();
+				for (const statement of ARCHIVE_SCHEMA) await connection.run(statement);
+				this.#instance = instance;
+				this.#connection = connection;
+				this.#released = false;
+				return;
+			} catch (error) {
+				// A server that just restarted may still be releasing the lock.
+				if (attempt >= LOCK_RETRIES || !isLockError(error)) throw error;
+				await delay(LOCK_RETRY_MS);
+			}
+		}
+	}
+
+	/** Closes the connection and the database, which releases the file lock. */
+	#disconnect(): void {
+		const connection = this.#connection;
+		const instance = this.#instance;
+		this.#connection = null;
+		this.#instance = null;
+		connection?.closeSync?.();
+		instance?.closeSync?.();
+	}
+
+	/** Arms the idle release once nothing is queued. */
+	#scheduleRelease(): void {
+		if (this.#idleReleaseMs === 0 || this.#pending > 0 || this.#connection === null) return;
+		clearTimeout(this.#idleTimer);
+		this.#idleTimer = setTimeout(() => {
+			this.#idleTimer = undefined;
+			void this.#enqueue(async () => {
+				// A statement queued since the timer fired keeps the file open.
+				if (this.#pending > 0 || this.#connection === null) return;
+				this.#disconnect();
+				this.#released = true;
+			});
+		}, this.#idleReleaseMs);
+		(this.#idleTimer as { unref?: () => void }).unref?.();
+	}
+
 	/** Runs one task after every task queued before it. */
 	#enqueue<T>(task: () => Promise<T>): Promise<T> {
 		const next = this.#queue.then(task, task);
@@ -315,13 +389,21 @@ export class LogArchive {
 
 	/** Runs a statement, returning the failure instead of throwing. */
 	async #guard<T>(fallback: T, task: () => Promise<T>): Promise<T> {
-		if (this.#connection === null) return fallback;
+		if (this.#connection === null && !this.#released) return fallback;
+		this.#pending += 1;
+		clearTimeout(this.#idleTimer);
+		this.#idleTimer = undefined;
 		return this.#enqueue(async () => {
 			try {
+				// A released file is reopened for the statement that needs it.
+				if (this.#connection === null && this.#released) await this.#connect();
 				return await task();
 			} catch (error) {
-				this.#error = error instanceof Error ? error.message : String(error);
+				this.#error = describeOpenError(error, this.path);
 				return fallback;
+			} finally {
+				this.#pending -= 1;
+				this.#scheduleRelease();
 			}
 		});
 	}
@@ -376,11 +458,12 @@ export class LogArchive {
 	}
 
 	/**
-	 * Writes one batch of streamed events.
+	 * Writes one batch of streamed events, answering how many rows were written.
 	 *
 	 * Batches are split into chunks of {@link ARCHIVE_INSERT_CHUNK} rows, and
 	 * `INSERT OR IGNORE` plus the unique index make a repeated scan idempotent.
-	 * Failures never propagate: a full disk must not interrupt a log stream.
+	 * Failures never propagate: a full disk must not interrupt a log stream. A
+	 * failed write answers `0`, so a caller can tell it from a stored batch.
 	 */
 	async record(region: string, logGroup: string, events: readonly LogEventDto[]): Promise<number> {
 		if (events.length === 0) return 0;
@@ -400,18 +483,31 @@ export class LogArchive {
 		});
 	}
 
-	/** Reads one page of archived events. */
+	/**
+	 * Reads one page of archived events.
+	 *
+	 * A read that fails answers an empty page with `error` set, so a replay can
+	 * report the failure instead of mistaking it for the end of the window.
+	 */
 	async page(
 		request: ArchivePageRequest,
-	): Promise<{ events: LogEventDto[]; last: ArchiveCursor | null }> {
-		const empty = { events: [] as LogEventDto[], last: null };
-		return this.#guard(empty, async () => {
-			const connection = this.#connection;
-			if (connection === null) return empty;
-			const { sql, params } = buildPageQuery(request);
-			const result = await connection.runAndReadAll(sql, params);
-			return rowsToPage(result.getRowObjects());
-		});
+	): Promise<{ events: LogEventDto[]; last: ArchiveCursor | null; error?: string }> {
+		const page = await this.#guard<{ events: LogEventDto[]; last: ArchiveCursor | null } | null>(
+			null,
+			async () => {
+				const connection = this.#connection;
+				if (connection === null) return { events: [], last: null };
+				const { sql, params } = buildPageQuery(request);
+				const result = await connection.runAndReadAll(sql, params);
+				return rowsToPage(result.getRowObjects());
+			},
+		);
+		if (page !== null) return page;
+		return {
+			events: [],
+			last: null,
+			...(this.#available ? { error: this.#error ?? 'the archive could not be read' } : {}),
+		};
 	}
 
 	/**
@@ -528,14 +624,20 @@ export class LogArchive {
 		return { path: this.path, available: this.#available, error: this.#error, bytes, totals };
 	}
 
-	/** Closes the connection. Safe to call twice. */
+	/** Closes the connection and the database file. Safe to call twice. */
 	async close(): Promise<void> {
+		clearTimeout(this.#idleTimer);
+		this.#idleTimer = undefined;
 		const connection = this.#connection;
+		const instance = this.#instance;
 		this.#connection = null;
+		this.#instance = null;
 		this.#available = false;
-		if (connection?.closeSync === undefined) return;
+		this.#released = false;
+		if (connection?.closeSync === undefined && instance?.closeSync === undefined) return;
 		await this.#enqueue(async () => {
-			connection.closeSync?.();
+			connection?.closeSync?.();
+			instance?.closeSync?.();
 		});
 	}
 }
@@ -566,7 +668,12 @@ export async function getArchive(
 	path = resolve(path);
 	let archive = sharedArchives.get(path);
 	if (!archive) {
-		archive = LogArchive.open({ path, ...(load === undefined ? {} : { load }) });
+		const idleReleaseMs = archiveIdleReleaseMs(env);
+		archive = LogArchive.open({
+			path,
+			...(load === undefined ? {} : { load }),
+			...(idleReleaseMs === 0 ? {} : { idleReleaseMs }),
+		});
 		sharedArchives.set(path, archive);
 	}
 	return archive;

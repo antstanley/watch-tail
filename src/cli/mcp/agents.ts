@@ -232,6 +232,11 @@ function serverEntry(agent: AgentDefinition, command: McpCommand): Record<string
 	return { ...agent.entryExtras, command: command.command, args: command.args };
 }
 
+/** True for a JSON object (not an array or null). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** The result of merging the entry into one agent's config file. */
 export type ConfigPlan = {
 	/** Full new contents of the file. */
@@ -261,12 +266,12 @@ function planJsonConfig(agent: AgentDefinition, existing: string, command: McpCo
 		}
 	}
 	const mapValue = root[agent.serverKey];
-	const map =
-		typeof mapValue === 'object' && mapValue !== null && !Array.isArray(mapValue)
-			? (mapValue as Record<string, unknown>)
-			: {};
-	const entry = serverEntry(agent, command);
-	const changed = canonical(map[MCP_SERVER_NAME]) !== canonical(entry);
+	const map = isRecord(mapValue) ? mapValue : {};
+	// Only the launch fields are ours: anything the user added to the entry (an
+	// `env` with AWS_PROFILE, a timeout) survives a re-run.
+	const current = map[MCP_SERVER_NAME];
+	const entry = { ...(isRecord(current) ? current : {}), ...serverEntry(agent, command) };
+	const changed = canonical(current) !== canonical(entry);
 	root[agent.serverKey] = { ...map, [MCP_SERVER_NAME]: entry };
 	return { contents: `${JSON.stringify(root, null, 2)}\n`, changed };
 }
@@ -276,34 +281,127 @@ function quoteToml(value: string): string {
 	return JSON.stringify(value);
 }
 
-/** Renders the TOML lines for the Codex `[mcp_servers.watch-tail]` section. */
-function tomlSection(agent: AgentDefinition, command: McpCommand): string[] {
+/** The TOML keys watch-tail owns in the Codex `[mcp_servers.watch-tail]` section. */
+function tomlEntries(command: McpCommand): [string, string][] {
 	return [
-		`[${agent.serverKey}.${MCP_SERVER_NAME}]`,
-		`command = ${quoteToml(command.command)}`,
-		`args = [${command.args.map(quoteToml).join(', ')}]`,
+		['command', quoteToml(command.command)],
+		['args', `[${command.args.map(quoteToml).join(', ')}]`],
 	];
 }
 
-/** Replaces a `[section]` block, or appends it when the file does not have one. */
-export function replaceTomlSection(text: string, section: string, block: string[]): string {
-	const lines = text.length === 0 ? [] : text.replace(/\n$/, '').split('\n');
-	const header = `[${section}]`;
-	const start = lines.findIndex((line) => line.trim() === header);
-	if (start >= 0) {
-		let end = start + 1;
-		while (end < lines.length && !lines[end].trimStart().startsWith('[')) end += 1;
-		return [...lines.slice(0, start), ...block, ...lines.slice(end)].join('\n') + '\n';
+/** Renders the Codex `[mcp_servers.watch-tail]` section. */
+function tomlSection(agent: AgentDefinition, command: McpCommand): string[] {
+	return [
+		`[${agent.serverKey}.${MCP_SERVER_NAME}]`,
+		...tomlEntries(command).map(([key, value]) => `${key} = ${value}`),
+	];
+}
+
+/** A table header's dotted name with quotes and spaces removed, or `null`. */
+function tomlHeaderName(line: string): string | null {
+	const match = /^\s*\[([^[\]]+)\]\s*(?:#.*)?$/.exec(line);
+	if (match === null) return null;
+	return match[1]
+		.split('.')
+		.map((part) =>
+			part
+				.trim()
+				.replace(/^"(.*)"$/, '$1')
+				.replace(/^'(.*)'$/, '$1'),
+		)
+		.join('.');
+}
+
+/**
+ * How far a line moves the depth of open `[` arrays, ignoring brackets inside
+ * strings and comments, so a multi-line `args = [` is read as one value.
+ */
+function bracketDelta(line: string): number {
+	let delta = 0;
+	let quote: string | null = null;
+	for (let index = 0; index < line.length; index += 1) {
+		const char = line[index];
+		if (quote !== null) {
+			if (char === '\\' && quote === '"') index += 1;
+			else if (char === quote) quote = null;
+			continue;
+		}
+		if (char === '#') break;
+		if (char === '"' || char === "'") quote = char;
+		else if (char === '[') delta += 1;
+		else if (char === ']') delta -= 1;
 	}
-	const body = lines.length > 0 ? [...lines, '', ...block] : block;
-	return body.join('\n') + '\n';
+	return delta;
+}
+
+/** The key a `key = value` line assigns, or `null`. */
+function tomlKey(line: string): string | null {
+	const match = /^\s*("[^"]*"|'[^']*'|[A-Za-z0-9_-]+)\s*=/.exec(line);
+	return match === null ? null : match[1].replace(/^["'](.*)["']$/, '$1');
+}
+
+/**
+ * Sets `entries` in the `[section]` table, or appends the table when the file
+ * does not have one.
+ *
+ * Only the named keys are rewritten (a multi-line value is replaced whole);
+ * every other key the user put in the table, such as an `env`, is kept.
+ */
+export function upsertTomlSection(
+	text: string,
+	section: string,
+	entries: readonly [string, string][],
+): string {
+	const lines = text.length === 0 ? [] : text.replace(/\n$/, '').split('\n');
+	const start = lines.findIndex((line) => tomlHeaderName(line) === section);
+	if (start < 0) {
+		const block = [`[${section}]`, ...entries.map(([key, value]) => `${key} = ${value}`)];
+		const body = lines.length > 0 ? [...lines, '', ...block] : block;
+		return body.join('\n') + '\n';
+	}
+
+	// The table runs to the next header (`[t]` or `[[t]]`). Values are read whole,
+	// so a line of a multi-line array is never mistaken for one.
+	const body: { lines: string[]; key: string | null }[] = [];
+	let end = start + 1;
+	while (end < lines.length) {
+		if (lines[end].trimStart().startsWith('[')) break;
+		const value = [lines[end]];
+		let depth = bracketDelta(lines[end]);
+		end += 1;
+		while (depth > 0 && end < lines.length) {
+			value.push(lines[end]);
+			depth += bracketDelta(lines[end]);
+			end += 1;
+		}
+		body.push({ lines: value, key: tomlKey(value[0]) });
+	}
+
+	const pending = new Map(entries);
+	const rewritten: string[] = [];
+	for (const item of body) {
+		const replacement = item.key === null ? undefined : pending.get(item.key);
+		if (replacement === undefined || item.key === null) {
+			rewritten.push(...item.lines);
+			continue;
+		}
+		rewritten.push(`${item.key} = ${replacement}`);
+		pending.delete(item.key);
+	}
+	// Keys the table did not have go after its last non-blank line.
+	let insertAt = rewritten.length;
+	while (insertAt > 0 && rewritten[insertAt - 1].trim().length === 0) insertAt -= 1;
+	rewritten.splice(insertAt, 0, ...[...pending].map(([key, value]) => `${key} = ${value}`));
+
+	return [...lines.slice(0, start + 1), ...rewritten, ...lines.slice(end)].join('\n') + '\n';
 }
 
 /** Merges the entry into a TOML config file (Codex CLI). */
 function planTomlConfig(agent: AgentDefinition, existing: string, command: McpCommand): ConfigPlan {
 	const section = `${agent.serverKey}.${MCP_SERVER_NAME}`;
-	const contents = replaceTomlSection(existing, section, tomlSection(agent, command));
-	return { contents, changed: contents !== existing };
+	const contents = upsertTomlSection(existing, section, tomlEntries(command));
+	const normalized = existing.length === 0 || existing.endsWith('\n') ? existing : `${existing}\n`;
+	return { contents, changed: contents !== normalized };
 }
 
 /**

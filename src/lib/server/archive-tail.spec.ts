@@ -108,6 +108,18 @@ describe('tailArchivedEvents', () => {
 		]);
 	});
 
+	test('reports a failed read instead of calling the window complete', async () => {
+		const { archive } = fakeArchive([]);
+		archive.page = async () => ({ events: [], last: null, error: 'IO Error' });
+		expect(await collect(tailArchivedEvents(tailOptions(archive)))).toEqual([
+			{
+				type: 'error',
+				message: 'The local archive could not be read: IO Error',
+				code: 'archive-read-failed',
+			},
+		]);
+	});
+
 	test('ends with window-complete on an empty window', async () => {
 		const { archive } = fakeArchive([]);
 		expect(await collect(tailArchivedEvents(tailOptions(archive)))).toEqual([

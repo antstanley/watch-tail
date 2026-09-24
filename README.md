@@ -50,7 +50,8 @@ whole UI, including the log view, and is remembered in this browser.
 - **Offline history.** Streamed events are saved to a local DuckDB archive. Browse them later without
   AWS credentials, or query them with SQL.
 - **Archive-first historic views.** A historic window reads events the archive already holds and only
-  asks CloudWatch for the gaps, so re-investigating an incident is fast and uses less AWS. A
+  asks CloudWatch for the gaps, so re-investigating an incident is fast and uses less AWS. The last
+  few minutes of a window are always re-read, because CloudWatch can still be ingesting them. A
   CloudWatch **filter pattern** keeps that view on the API.
 - **Reopen the same view.** Region, groups, source, mode, and time window live in the URL. A teammate
   needs their own AWS access or a copy of the archive; the link does not include logs or credentials.
@@ -167,8 +168,16 @@ The agent gets five tools: `archive_status`, `list_log_groups`, `search_logs`, `
 `source="cloudwatch"` is the default: it reads the local DuckDB archive first and only calls AWS for
 windows it does not already hold, so it is fast and complete. Use `source="archive"` to stay entirely
 on this machine - no AWS calls, and no 14-day limit. `search_logs` accepts a substring (`search`) and
-level filters on the archive, or a CloudWatch `filterPattern`. Searching does not silently pull your
+level filters on the archive, or a CloudWatch `filterPattern`. Results are sorted oldest first, and
+`limit` (500 by default) caps a search on either source. Searching does not silently pull your
 whole history: only the windows you ask for are archived, and only the events actually streamed.
+
+DuckDB lets one process use an archive file at a time. The MCP server's private watch-tail opens it
+only while a tool call runs, so it does not lock out the browser UI; a watch-tail UI, however, holds
+the archive for as long as it runs. To have an agent use a UI you keep open instead of starting a
+second server, add `"--url", "http://127.0.0.1:4517"` after `"mcp"` in the `args` of its
+`watch-tail` entry. Running `mcp init` again resets `command` and `args` (and keeps everything else
+in the entry), so add it back afterwards.
 The server speaks the Model Context Protocol through [tmcp](https://tmcp.io): the session handshake
 (`2025-06-18` and earlier) and the stateless `2026-07-28` revision with per-request metadata.
 

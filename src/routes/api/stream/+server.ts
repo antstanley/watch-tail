@@ -4,7 +4,14 @@ import { apiError } from '$lib/server/api';
 import { registerLiveStream } from '$lib/server/live-streams';
 import { getArchive, type LogArchive } from '$lib/server/archive';
 import { tailArchivedEvents } from '$lib/server/archive-tail';
-import { intersectCoverage, subtractCoverage } from '$lib/server/archive-sql';
+import {
+	intersectCoverage,
+	mergeCoverage,
+	settleCoverage,
+	subtractCoverage,
+	type CoverageEntry,
+	type CoverageInterval,
+} from '$lib/server/archive-sql';
 import {
 	REGION_PARAM_HINT,
 	createLogsClient,
@@ -62,6 +69,11 @@ async function* taggedEvents(
 	origin: 'archive' | 'cloudwatch',
 ): AsyncGenerator<TailBatch, void, void> {
 	for await (const batch of source) {
+		// A coverage range is recorded under its group, like the events before it.
+		if (batch.type === 'coverage') {
+			yield { ...batch, group };
+			continue;
+		}
 		if (batch.type !== 'events') {
 			yield batch;
 			continue;
@@ -77,14 +89,15 @@ async function* taggedEvents(
  *
  * A merged multi-group stream tags every event with its own group, so a batch
  * that mixes groups is split; a single-group stream falls back to the group the
- * request named.
+ * request named. Answers `false` when any row was not stored, which is what
+ * stops the stream from recording coverage it cannot back up.
  */
 async function recordBatch(
 	archive: LogArchive,
 	region: string,
 	groupNames: readonly string[],
 	events: readonly LogEventDto[],
-): Promise<void> {
+): Promise<boolean> {
 	const fallback = groupNames[0] ?? '';
 	const byGroup = new Map<string, LogEventDto[]>();
 	for (const event of events) {
@@ -93,25 +106,39 @@ async function recordBatch(
 		if (bucket === undefined) byGroup.set(group, [event]);
 		else bucket.push(event);
 	}
+	let stored = true;
 	for (const [group, groupEvents] of byGroup) {
-		await archive.record(region, group, groupEvents);
+		const written = await archive.record(region, group, groupEvents);
+		if (written !== groupEvents.length) stored = false;
 	}
+	return stored;
 }
 
-/** One group's queried range, ready to be recorded as archive coverage. */
-type CoverageTarget = { logGroup: string; start: number; end: number };
+/**
+ * Collects the ranges a stream read from CloudWatch, per log group.
+ *
+ * Each range arrives after the events it produced, and the pump has archived
+ * those by then, so a range seen here is backed by stored rows. Only the part
+ * that had settled when it was read is kept, and ranges are merged as they
+ * arrive so a long live tail holds a handful of intervals, not one per poll.
+ */
+class CoverageCollector {
+	readonly #byGroup = new Map<string, CoverageInterval[]>();
 
-/** What a feed should record as covered when it finishes. */
-type CoveragePlan = {
-	/** Ranges this stream read from CloudWatch. */
-	ranges: CoverageTarget[];
-	/**
-	 * A live tail records each poll as it happens, so its ranges can be saved
-	 * whatever ends the stream. A finite scan only records when it completed its
-	 * window: an interrupted or truncated scan did not cover the whole range.
-	 */
-	onlyWhenComplete?: boolean;
-};
+	add(group: string, range: { start: number; end: number; readAt: number }): void {
+		const settled = settleCoverage(range, range.readAt);
+		if (settled === null) return;
+		this.#byGroup.set(group, mergeCoverage([...(this.#byGroup.get(group) ?? []), settled]));
+	}
+
+	entries(): CoverageEntry[] {
+		const entries: CoverageEntry[] = [];
+		for (const [logGroup, intervals] of this.#byGroup) {
+			for (const interval of intervals) entries.push({ logGroup, ...interval });
+		}
+		return entries;
+	}
+}
 
 /** One request's event feed plus the resources it owns. */
 type Feed = {
@@ -123,8 +150,6 @@ type Feed = {
 	generator: AsyncGenerator<TailBatch, void, void>;
 	/** Releases what the feed opened; called once, when the stream ends. */
 	release: () => void;
-	/** Ranges to record as archive coverage once the feed finishes. */
-	coverage?: CoveragePlan;
 };
 
 /** Everything {@link resolveFeed} needs to pick a source. */
@@ -144,7 +169,7 @@ type FeedRequest = {
 	levels: readonly LogLevel[] | null;
 	/** Archive-only page size, or `null` for the tailer default. */
 	pageSize: number | null;
-	/** Archive-only event cap, or `null` for the tailer default. */
+	/** Event cap of a historic window, or `null` for the tailer default. */
 	maxEvents: number | null;
 	pollIntervalMs: number;
 	signal: AbortSignal;
@@ -241,11 +266,10 @@ async function resolveFeed(request: FeedRequest): Promise<Feed | Response> {
 	if (opened instanceof Response) return opened;
 	const { client, region } = opened;
 
-	// A poll's coverage is what a later view reads from the archive instead of
+	// A read range is what a later view answers from the archive instead of
 	// CloudWatch. It is only trustworthy without a filter pattern, which would
 	// archive a subset of the events the range actually holds.
-	const tracksCoverage = (request.filterPattern ?? '').length === 0;
-	const polled: CoverageTarget[] = [];
+	const reportCoverage = (request.filterPattern ?? '').length === 0;
 
 	// One group reads one call, so a multi-group view runs a tail per group and
 	// merges them into a single batch stream.
@@ -260,31 +284,19 @@ async function resolveFeed(request: FeedRequest): Promise<Feed | Response> {
 				filterPattern: request.filterPattern,
 				signal,
 				maxConsecutiveErrors: MAX_CONSECUTIVE_ERRORS,
-				// Only a live tail needs per-poll coverage: a finite scan records
-				// its whole window once it completes.
-				...(endTime === null && tracksCoverage
-					? { onPoll: (start: number, end: number) => polled.push({ logGroup: group, start, end }) }
-					: {}),
+				reportCoverage,
+				...(request.maxEvents === null ? {} : { maxEvents: request.maxEvents }),
 			}),
 			group,
 			'cloudwatch',
 		),
 	);
-	const feed: Feed = {
+	return {
 		region,
 		groupNames,
 		generator: mergeTails(tails),
 		release: () => client.destroy(),
 	};
-	if (endTime !== null && tracksCoverage) {
-		feed.coverage = {
-			ranges: groupNames.map((group) => ({ logGroup: group, start: startTime, end: endTime })),
-			onlyWhenComplete: true,
-		};
-	} else if (tracksCoverage) {
-		feed.coverage = { ranges: polled };
-	}
-	return feed;
 }
 
 /**
@@ -296,11 +308,13 @@ async function resolveFeed(request: FeedRequest): Promise<Feed | Response> {
  * fast and offline-first, without ever dropping events the archive never saw -
  * the gaps are always filled from AWS.
  *
- * The CloudWatch gaps are recorded as coverage once the scan completes, so the
- * next view of the same window is answered entirely from the archive.
+ * Each gap is recorded as coverage once CloudWatch has been read over it and
+ * its events are stored, so the next view of the same window is answered from
+ * the archive (all but its last few minutes, which may still be arriving).
  */
 async function resolveHybridFeed(request: FeedRequest): Promise<Feed | Response> {
 	const { config, env, groupNames, startTime, filterPattern, pollIntervalMs, signal } = request;
+	const { maxEvents, pageSize } = request;
 	const end = request.endTime ?? Date.now();
 
 	const opened = await openCloudWatch(config);
@@ -312,7 +326,6 @@ async function resolveHybridFeed(request: FeedRequest): Promise<Feed | Response>
 
 	const coverage = await archive.coverage(region, groupNames, startTime, end);
 	const generators: AsyncGenerator<TailBatch, void, void>[] = [];
-	const targets: CoverageTarget[] = [];
 
 	for (const group of groupNames) {
 		const intervals = coverage.get(group) ?? [];
@@ -325,6 +338,8 @@ async function resolveHybridFeed(request: FeedRequest): Promise<Feed | Response>
 						logGroups: [group],
 						startTime: covered.start,
 						endTime: covered.end,
+						...(pageSize === null ? {} : { pageSize }),
+						...(maxEvents === null ? {} : { maxEvents }),
 						signal,
 					}),
 					group,
@@ -344,12 +359,13 @@ async function resolveHybridFeed(request: FeedRequest): Promise<Feed | Response>
 						filterPattern,
 						signal,
 						maxConsecutiveErrors: MAX_CONSECUTIVE_ERRORS,
+						reportCoverage: true,
+						...(maxEvents === null ? {} : { maxEvents }),
 					}),
 					group,
 					'cloudwatch',
 				),
 			);
-			targets.push({ logGroup: group, start: gap.start, end: gap.end });
 		}
 	}
 
@@ -358,7 +374,6 @@ async function resolveHybridFeed(request: FeedRequest): Promise<Feed | Response>
 		groupNames,
 		generator: mergeTails(generators),
 		release: () => client.destroy(),
-		coverage: { ranges: targets, onlyWhenComplete: true },
 	};
 }
 
@@ -528,9 +543,19 @@ export const GET = async ({ url, request }: RequestEvent): Promise<Response> => 
 		feed.release();
 	};
 
+	// A historic CloudWatch view can merge several tails (one per group, or per
+	// gap and archived range), so the requested cap is enforced across all of them
+	// here. The archive source already stops at its own cap.
+	const eventCap =
+		source === 'cloudwatch' && streamWindow.mode === 'historic' ? feedRequest.maxEvents : null;
+
 	const pump = async (): Promise<void> => {
 		let consecutiveErrors = 0;
 		let reason = 'completed';
+		let sent = 0;
+		const coverage = new CoverageCollector();
+		// One unstored batch means the archive cannot vouch for what it was read over.
+		let archiveComplete = true;
 		try {
 			for await (const batch of feed.generator) {
 				if (closed || bodyAbort.signal.aborted) break;
@@ -540,17 +565,29 @@ export const GET = async ({ url, request }: RequestEvent): Promise<Response> => 
 					// from the archive keeps the level it was stored with (possibly
 					// `null`) while a missing request id is detected from its message.
 					const events = withDetections(batch.events);
-					const payload: StreamLogPayload = { events };
+					const remaining = eventCap === null ? events.length : eventCap - sent;
+					const shown = remaining < events.length ? events.slice(0, remaining) : events;
+					const payload: StreamLogPayload = { events: shown };
 					consecutiveErrors = 0;
+					sent += shown.length;
 					enqueue(sseFrame('log', payload));
 					// Archiving is part of the stream: awaiting keeps the order and lets
 					// the archive serialise its own writes. It never throws. A merged
 					// multi-group stream tags each event with its own group, so the rows
 					// land under the right log group. Events replayed from the archive
-					// already live there, so they are not written back.
+					// already live there, so they are not written back. The whole batch
+					// is stored even past the cap: it was read, and it is still true.
 					if (archive !== null && batch.origin !== 'archive') {
-						await recordBatch(archive, feed.region, feed.groupNames, events);
+						const stored = await recordBatch(archive, feed.region, feed.groupNames, events);
+						if (!stored) archiveComplete = false;
 					}
+					if (eventCap !== null && sent >= eventCap) {
+						reason = 'event-limit';
+						break;
+					}
+				} else if (batch.type === 'coverage') {
+					// Every event of this range came before it and has been stored.
+					coverage.add(batch.group ?? feed.groupNames[0] ?? '', batch);
 				} else if (batch.type === 'end') {
 					// A finite (historic) window reports why it finished; a live tail
 					// only ends because the client went away.
@@ -567,13 +604,12 @@ export const GET = async ({ url, request }: RequestEvent): Promise<Response> => 
 				if (bodyAbort.signal.aborted) reason = 'client-disconnected';
 				else if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) reason = 'repeated-errors';
 			}
-			// Remember what was read from CloudWatch, so the next view of this window
-			// can be answered from the archive. A live tail saves the polls that
-			// succeeded; a finite scan only saves a window it actually finished.
-			if (archive !== null && feed.coverage !== undefined && feed.coverage.ranges.length > 0) {
-				if (feed.coverage.onlyWhenComplete !== true || reason === 'window-complete') {
-					await archive.recordCoverage(feed.region, feed.coverage.ranges);
-				}
+			// Remember what was read from CloudWatch and stored, so the next view of
+			// this window can be answered from the archive. Only ranges whose events
+			// were all written count, whatever ended the stream.
+			const covered = coverage.entries();
+			if (archive !== null && archiveComplete && covered.length > 0) {
+				await archive.recordCoverage(feed.region, covered);
 			}
 		} catch (error) {
 			const described = describeAwsError(error);

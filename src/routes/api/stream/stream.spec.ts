@@ -3,6 +3,7 @@ import type { CloudWatchLogsClient, FilteredLogEvent } from '@aws-sdk/client-clo
 import type { RequestEvent } from '@sveltejs/kit';
 import type * as AwsServer from '$lib/server/aws';
 import { REGION_PARAM_HINT } from '$lib/server/aws';
+import { COVERAGE_SETTLE_MS } from '$lib/server/archive-sql';
 import { GET } from './+server';
 
 type FakeSend = (command: unknown, options?: unknown) => Promise<unknown>;
@@ -46,6 +47,8 @@ const archiveState = {
 		region: string;
 		entries: { logGroup: string; start: number; end: number }[];
 	}[],
+	/** Makes every write fail, the way a full disk would. */
+	failRecords: false,
 };
 
 function resetArchive(): void {
@@ -58,6 +61,7 @@ function resetArchive(): void {
 	archiveState.coverage = new Map();
 	archiveState.coverageQueries = [];
 	archiveState.recordedCoverage = [];
+	archiveState.failRecords = false;
 }
 
 vi.mock('$lib/server/archive', () => ({
@@ -73,7 +77,7 @@ vi.mock('$lib/server/archive', () => ({
 			},
 			async record(region: string, group: string, events: unknown[]) {
 				archiveState.records.push({ region, group, events });
-				return events.length;
+				return archiveState.failRecords ? 0 : events.length;
 			},
 			async coverage(region: string, groups: string[], start: number, end: number) {
 				archiveState.coverageQueries.push({ region, groups: [...groups], start, end });
@@ -98,7 +102,7 @@ vi.mock('$lib/server/archive', () => ({
 }));
 
 type Frame = { event: string; data: unknown };
-type PollResult = { events: FilteredLogEvent[] } | Error;
+type PollResult = { events: FilteredLogEvent[]; nextToken?: string } | Error;
 
 /** Builds a CloudWatch event for a poll result. */
 function event(id: string, timestamp: number, message = 'line'): FilteredLogEvent {
@@ -1104,7 +1108,8 @@ describe('historic views that prefer the archive', () => {
 	}
 
 	const GROUP = '/aws/lambda/demo';
-	const TO = Date.now() - 60_000;
+	// Old enough that the whole window has settled (see COVERAGE_SETTLE_MS).
+	const TO = Date.now() - 3_600_000;
 	const FROM = TO - 60_000;
 
 	test('serves a fully covered window from the archive, without calling CloudWatch', async () => {
@@ -1215,14 +1220,18 @@ describe('historic views that prefer the archive', () => {
 		expect(command.input.filterPattern).toBe('ERROR');
 	});
 
-	test('records what a live tail queried, so later historic views can use it', async () => {
+	test('records what a live tail read, up to the settle margin', async () => {
 		const controller = new AbortController();
-		const response = await GET(requestEvent({ group: GROUP, poll: '250' }, controller.signal));
+		const before = Date.now();
+		const response = await GET(
+			requestEvent({ group: GROUP, poll: '250', lookback: '1h' }, controller.signal),
+		);
 		const reader = startReading(response);
+		// The second poll starts after the first sweep's range has been consumed.
 		await withTimeout(
-			waitFor(() => mocks.send.mock.calls.length > 0),
+			waitFor(() => mocks.send.mock.calls.length > 1),
 			2000,
-			'first poll',
+			'second poll',
 		);
 		controller.abort();
 		await withTimeout(reader.done, 2000, 'stream end');
@@ -1230,7 +1239,135 @@ describe('historic views that prefer the archive', () => {
 		expect(archiveState.recordedCoverage).toHaveLength(1);
 		const recorded = archiveState.recordedCoverage[0];
 		expect(recorded.region).toBe('eu-west-1');
-		expect(recorded.entries[0].logGroup).toBe(GROUP);
-		expect(recorded.entries[0].start).toBeLessThanOrEqual(recorded.entries[0].end);
+		const [entry] = recorded.entries;
+		expect(entry.logGroup).toBe(GROUP);
+		// The last five minutes may still be arriving, so they stay uncovered.
+		expect(entry.start).toBeLessThanOrEqual(before - 3_600_000 + 1000);
+		expect(entry.end).toBeLessThanOrEqual(Date.now() - COVERAGE_SETTLE_MS);
+		expect(entry.end).toBeGreaterThanOrEqual(before - COVERAGE_SETTLE_MS);
+	});
+
+	test('a window that has not settled is not recorded at all', async () => {
+		const now = Date.now();
+		queueSend([{ events: [event('e1', now - 60_000, 'recent')] }]);
+
+		await readToEnd({
+			group: GROUP,
+			mode: 'historic',
+			from: String(now - 120_000),
+			to: String(now - 60_000),
+			poll: '250',
+		});
+
+		expect(archiveState.records).toHaveLength(1);
+		expect(archiveState.recordedCoverage).toEqual([]);
+	});
+
+	test('follows nextToken, so an empty first page does not end the scan', async () => {
+		queueSend([{ events: [], nextToken: 'page-2' }, { events: [event('e1', TO, 'second page')] }]);
+
+		const frames = await readToEnd({
+			group: GROUP,
+			mode: 'historic',
+			from: String(FROM),
+			to: String(TO),
+			poll: '250',
+		});
+
+		const messages = frames
+			.filter((frame) => frame.event === 'log')
+			.flatMap((frame) => (frame.data as { events: { message: string }[] }).events)
+			.map((entry) => entry.message);
+		expect(messages).toEqual(['second page']);
+		expect(archiveState.recordedCoverage).toEqual([
+			{ region: 'eu-west-1', entries: [{ logGroup: GROUP, start: FROM, end: TO }] },
+		]);
+	});
+
+	test('records no coverage when the archive failed to store the events', async () => {
+		archiveState.failRecords = true;
+		queueSend([{ events: [event('e1', TO, 'historic')] }]);
+
+		await readToEnd({
+			group: GROUP,
+			mode: 'historic',
+			from: String(FROM),
+			to: String(TO),
+			poll: '250',
+		});
+
+		expect(archiveState.recordedCoverage).toEqual([]);
+	});
+
+	test('records no coverage for a live poll the client never received', async () => {
+		// The poll answers after the client has gone: its events are never stored.
+		const controller = new AbortController();
+		let answer: ((value: unknown) => void) | undefined;
+		mocks.send.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					answer = resolve;
+				}),
+		);
+		const response = await GET(
+			requestEvent({ group: GROUP, poll: '250', lookback: '1h' }, controller.signal),
+		);
+		const reader = startReading(response);
+		await withTimeout(
+			waitFor(() => mocks.send.mock.calls.length > 0),
+			2000,
+			'first poll',
+		);
+		controller.abort();
+		answer?.({ events: [event('late', Date.now() - 1000, 'unseen')] });
+		await withTimeout(reader.done, 2000, 'stream end');
+
+		expect(archiveState.records).toEqual([]);
+		expect(archiveState.recordedCoverage).toEqual([]);
+	});
+
+	test('caps a historic CloudWatch view at the requested event count', async () => {
+		queueSend([
+			{
+				events: [
+					event('e1', FROM + 1, 'one'),
+					event('e2', FROM + 2, 'two'),
+					event('e3', FROM + 3, 'three'),
+				],
+			},
+		]);
+
+		const frames = await readToEnd({
+			group: GROUP,
+			mode: 'historic',
+			from: String(FROM),
+			to: String(TO),
+			max: '2',
+			poll: '250',
+		});
+
+		const shown = frames
+			.filter((frame) => frame.event === 'log')
+			.flatMap((frame) => (frame.data as { events: unknown[] }).events);
+		expect(shown).toHaveLength(2);
+		expect(frames.at(-1)?.data).toEqual({ reason: 'event-limit' });
+		// What was read is still stored, but the unfinished scan is not covered.
+		expect(archiveState.records[0].events).toHaveLength(3);
+		expect(archiveState.recordedCoverage).toEqual([]);
+	});
+
+	test('passes the cap to the archived part of a hybrid view', async () => {
+		archiveState.coverage.set(GROUP, [{ start: FROM, end: TO }]);
+
+		await readToEnd({
+			group: GROUP,
+			mode: 'historic',
+			from: String(FROM),
+			to: String(TO),
+			max: '25',
+			pageSize: '10',
+		});
+
+		expect(archiveState.requests[0]).toMatchObject({ limit: 10 });
 	});
 });

@@ -15,7 +15,7 @@ import {
 	findAgent,
 	mcpServerCommand,
 	planAgentConfig,
-	replaceTomlSection,
+	upsertTomlSection,
 	type AgentContext,
 } from '../src/cli/mcp/agents.ts';
 
@@ -146,6 +146,23 @@ describe('planAgentConfig: JSON agents', () => {
 		);
 	});
 
+	it('keeps fields the user added to the watch-tail entry', () => {
+		const existing = JSON.stringify({
+			mcpServers: {
+				'watch-tail': { command: 'old', args: [], env: { AWS_PROFILE: 'prod' } },
+			},
+		});
+		const plan = planAgentConfig({ agent: cursor, existing, command });
+		const parsed = JSON.parse(plan.contents) as {
+			mcpServers: { 'watch-tail': Record<string, unknown> };
+		};
+		expect(plan.changed).toBe(true);
+		expect(parsed.mcpServers['watch-tail']).toEqual({ ...command, env: { AWS_PROFILE: 'prod' } });
+
+		const again = planAgentConfig({ agent: cursor, existing: plan.contents, command });
+		expect(again.changed).toBe(false);
+	});
+
 	it('adds the type field VS Code needs', () => {
 		const vscode = findAgent('vscode')!;
 		const plan = planAgentConfig({ agent: vscode, existing: '', command });
@@ -161,11 +178,65 @@ describe('the Codex TOML config', () => {
 	const command = { command: 'npx', args: ['-y', 'watch-tail@0.9.0', 'mcp'] };
 
 	it('appends a section to an existing file', () => {
-		const contents = replaceTomlSection('model = "gpt"\n', 'mcp_servers.watch-tail', [
-			'[mcp_servers.watch-tail]',
-			'command = "npx"',
+		const contents = upsertTomlSection('model = "gpt"\n', 'mcp_servers.watch-tail', [
+			['command', '"npx"'],
 		]);
 		expect(contents).toBe('model = "gpt"\n\n[mcp_servers.watch-tail]\ncommand = "npx"\n');
+	});
+
+	it('keeps the keys the user added to the section', () => {
+		const existing = [
+			'[mcp_servers.watch-tail]',
+			'command = "old"',
+			'args = [',
+			'  "-y",',
+			'  "watch-tail@0.1.0",',
+			'  "mcp",',
+			']',
+			'env = { AWS_PROFILE = "prod" }',
+			'',
+			'[mcp_servers.watch-tail.env_vars]',
+			'X = "1"',
+			'',
+		].join('\n');
+		const plan = planAgentConfig({ agent: codex, existing, command });
+		expect(plan.contents).toBe(
+			[
+				'[mcp_servers.watch-tail]',
+				'command = "npx"',
+				'args = ["-y", "watch-tail@0.9.0", "mcp"]',
+				'env = { AWS_PROFILE = "prod" }',
+				'',
+				'[mcp_servers.watch-tail.env_vars]',
+				'X = "1"',
+				'',
+			].join('\n'),
+		);
+	});
+
+	it('finds a section whose name is quoted', () => {
+		const existing = '[mcp_servers."watch-tail"]\ncommand = "old"\n';
+		const plan = planAgentConfig({ agent: codex, existing, command });
+		expect(plan.contents.match(/^\[mcp_servers\./gm)).toHaveLength(1);
+		expect(plan.contents).toContain('command = "npx"');
+	});
+
+	it('adds a missing key to an existing section', () => {
+		const existing = '[mcp_servers.watch-tail]\ncommand = "npx"\n\n[other]\nkey = 1\n';
+		const plan = planAgentConfig({ agent: codex, existing, command });
+		expect(plan.contents).toBe(
+			'[mcp_servers.watch-tail]\ncommand = "npx"\nargs = ["-y", "watch-tail@0.9.0", "mcp"]\n\n[other]\nkey = 1\n',
+		);
+	});
+
+	it('does not report a change for a file that only lacks a final newline', () => {
+		const first = planAgentConfig({ agent: codex, existing: '', command });
+		const again = planAgentConfig({
+			agent: codex,
+			existing: first.contents.trimEnd(),
+			command,
+		});
+		expect(again.changed).toBe(false);
 	});
 
 	it('replaces an existing section without touching its neighbours', () => {

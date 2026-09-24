@@ -310,7 +310,10 @@ export function createHttpBackend(input: {
 				region: outcome.region,
 				source: outcome.source,
 				groups: outcome.groups.length > 0 ? outcome.groups : groups,
-				events: outcome.events,
+				// Several groups, and the archived and CloudWatch parts of one window,
+				// stream side by side, so batches arrive interleaved. The sort is
+				// stable: events with one timestamp keep the order they arrived in.
+				events: outcome.events.toSorted((a, b) => a.timestamp - b.timestamp),
 				truncated: outcome.reason === 'event-limit',
 				reason: outcome.reason,
 				error: outcome.error,

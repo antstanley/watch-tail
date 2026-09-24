@@ -835,6 +835,8 @@ describe('run: the MCP entry points', () => {
 		expect(h.started).toHaveLength(1);
 		expect(h.started[0]?.port).toBe(4601);
 		expect(h.started[0]?.env.AWS_PROFILE).toBe('acme-prod');
+		// The private server lets go of the archive between tool calls.
+		expect(h.started[0]?.env.WATCH_TAIL_ARCHIVE_IDLE_MS).toBe('5000');
 		expect(served).toHaveLength(1);
 		expect(stopped).toHaveLength(1);
 	});
