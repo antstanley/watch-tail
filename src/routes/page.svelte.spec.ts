@@ -456,6 +456,20 @@ describe('page: collapsible group sidebar', () => {
 		expect(localStorage.getItem('watch-tail:sidebar-open')).toBe('true');
 	});
 
+	it('collapses from the chevron on the sidebar seam', async () => {
+		setUrl('?region=us-east-1&group=/aws/app');
+		await renderPage();
+
+		expect(screen.getByTestId('sidebar-seam-toggle').getAttribute('aria-expanded')).toBe('true');
+		await fireEvent.click(screen.getByTestId('sidebar-seam-toggle'));
+
+		expect(screen.queryByTestId('sidebar')).toBeNull();
+		expect(screen.getByTestId('sidebar-seam-toggle').getAttribute('aria-expanded')).toBe('false');
+
+		await fireEvent.click(screen.getByTestId('sidebar-seam-toggle'));
+		expect(screen.getByTestId('sidebar')).toBeTruthy();
+	});
+
 	it('starts collapsed when the stored preference says so, leaving the log view in place', async () => {
 		localStorage.setItem('watch-tail:sidebar-open', 'false');
 		setUrl('?region=us-east-1&group=/aws/app');

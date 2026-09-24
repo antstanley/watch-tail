@@ -620,6 +620,19 @@
 </script>
 
 <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+	<!-- Narrow screens stack the sidebar, so the seam chevron is hidden and this button stands in. -->
+	<button
+		type="button"
+		onclick={toggleSidebar}
+		aria-expanded={sidebarOpen}
+		aria-controls="log-group-sidebar"
+		title={sidebarOpen ? 'Hide the group list' : 'Show the group list'}
+		data-testid="sidebar-toggle"
+		class="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-700 hover:text-neutral-100 lg:hidden"
+	>
+		<span aria-hidden="true">▤</span>
+		Groups
+	</button>
 	<span class="text-[0.6875rem] font-semibold uppercase tracking-wider text-neutral-500">
 		Watching
 	</span>
@@ -648,20 +661,6 @@
 	{#if health !== null && health.ok}
 		<span class="text-xs text-emerald-400/80">API ok</span>
 	{/if}
-	<button
-		type="button"
-		onclick={toggleSidebar}
-		aria-expanded={sidebarOpen}
-		aria-controls="log-group-sidebar"
-		title={sidebarOpen
-			? 'Hide the group list, region and source'
-			: 'Show the group list, region and source'}
-		data-testid="sidebar-toggle"
-		class="ml-auto flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs font-medium text-neutral-300 transition-colors hover:border-neutral-700 hover:text-neutral-100"
-	>
-		<span aria-hidden="true">{sidebarOpen ? '◂' : '▸'}</span>
-		Groups
-	</button>
 </div>
 
 {#if bootError !== null}
@@ -707,18 +706,39 @@
 				onRefresh={refreshGroups}
 			/>
 		</div>
-
-		<ColumnResizer
-			label="Resize group list"
-			width={sidebarPx}
-			min={sidebarMinPx}
-			max={sidebarMaxPx}
-			testId="sidebar-resizer"
-			onChange={(next) => (sidebarPx = next)}
-			onCommit={() => saveSidebarWidth()}
-			class="hidden lg:block lg:w-2"
-		/>
 	{/if}
+
+	<!-- Wide screens: a chevron rides the seam between the sidebar and the logs. It sits on the
+	     resize handle when open and on a slim rail once collapsed, so the control is always on the
+	     edge of the thing it moves. -->
+	<div
+		class="relative hidden shrink-0 lg:flex {sidebarOpen ? 'lg:w-2' : 'lg:w-6'}"
+		data-testid="sidebar-seam"
+	>
+		{#if sidebarOpen}
+			<ColumnResizer
+				label="Resize group list"
+				width={sidebarPx}
+				min={sidebarMinPx}
+				max={sidebarMaxPx}
+				testId="sidebar-resizer"
+				onChange={(next) => (sidebarPx = next)}
+				onCommit={() => saveSidebarWidth()}
+				class="w-full"
+			/>
+		{/if}
+		<button
+			type="button"
+			onclick={toggleSidebar}
+			aria-expanded={sidebarOpen}
+			aria-controls="log-group-sidebar"
+			title={sidebarOpen ? 'Hide the group list' : 'Show the group list'}
+			data-testid="sidebar-seam-toggle"
+			class="absolute top-2 left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900 text-[0.6875rem] leading-none text-neutral-400 transition-colors hover:border-sky-600 hover:text-sky-300"
+		>
+			<span aria-hidden="true">{sidebarOpen ? '◂' : '▸'}</span>
+		</button>
+	</div>
 
 	<div class="flex min-h-0 min-w-0 flex-1 flex-col">
 		<EventScatterPanel

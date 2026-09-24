@@ -650,29 +650,33 @@ async function main(): Promise<number> {
 		);
 		await page.getByTestId('text-size-select').selectOption('default');
 
-		// The group-list sidebar folds away to give the logs the full width.
+		// The group-list sidebar folds away from the chevron on its seam, giving the logs the full width.
 		await page.waitForSelector('[data-testid="sidebar"]');
 		const sidebarWasOpen =
-			(await page.getAttribute('[data-testid="sidebar-toggle"]', 'aria-expanded')) === 'true';
-		await page.click('[data-testid="sidebar-toggle"]');
+			(await page.getAttribute('[data-testid="sidebar-seam-toggle"]', 'aria-expanded')) === 'true';
+		const toolbarToggleHidden = !(await page.getByTestId('sidebar-toggle').isVisible());
+		await page.click('[data-testid="sidebar-seam-toggle"]');
 		await page.waitForFunction(() => document.querySelector('[data-testid="sidebar"]') === null);
 		const sidebarAfter = await page.evaluate(() => ({
 			expanded: document
-				.querySelector('[data-testid="sidebar-toggle"]')
+				.querySelector('[data-testid="sidebar-seam-toggle"]')
 				?.getAttribute('aria-expanded'),
 			saved: localStorage.getItem('watch-tail:sidebar-open'),
 		}));
 		check(
 			checks,
-			'group sidebar collapses and is remembered',
-			sidebarWasOpen && sidebarAfter.expanded === 'false' && sidebarAfter.saved === 'false',
+			'group sidebar collapses from its seam and is remembered',
+			sidebarWasOpen &&
+				toolbarToggleHidden &&
+				sidebarAfter.expanded === 'false' &&
+				sidebarAfter.saved === 'false',
 		);
-		await page.click('[data-testid="sidebar-toggle"]');
+		await page.click('[data-testid="sidebar-seam-toggle"]');
 		await page.waitForSelector('[data-testid="sidebar"]');
 		check(
 			checks,
 			'group sidebar expands again',
-			(await page.getAttribute('[data-testid="sidebar-toggle"]', 'aria-expanded')) === 'true',
+			(await page.getAttribute('[data-testid="sidebar-seam-toggle"]', 'aria-expanded')) === 'true',
 		);
 
 		check(checks, 'no console errors', consoleErrors.length === 0, consoleErrors.join(' | '));
