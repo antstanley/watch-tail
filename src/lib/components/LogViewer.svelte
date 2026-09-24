@@ -20,6 +20,7 @@
 	import { requestRows } from '$lib/request-groups';
 	import type { RequestRow } from '$lib/request-groups';
 	import { PREFIX_WIDTH, STORAGE_KEYS, parseStoredWidth, remToPx } from '$lib/resize';
+	import { puppy } from '$lib/puppy.svelte';
 	import { textSize } from '$lib/text-size.svelte';
 	import { LEVEL_LABELS } from '$lib/series-buckets';
 	import { describeWindow } from '$lib/time-range';
@@ -504,6 +505,7 @@
 
 	/** Opens or closes a row that carries JSON. */
 	function toggleRow(key: string): void {
+		puppy.wag();
 		if (expandedRows[key] === true) {
 			const { [key]: _closed, ...rest } = expandedRows;
 			expandedRows = rest;

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/sv
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import EventScatter from './EventScatter.svelte';
 import EventScatterPanel from './EventScatterPanel.svelte';
+import { puppy } from '$lib/puppy.svelte';
 import { STORAGE_KEYS } from '$lib/resize';
 import type { SeriesPoint } from '$lib/types';
 
@@ -204,5 +205,20 @@ describe('EventScatterPanel: what a mark stands for', () => {
 			props: { points: marks, from: 0, to: 1, bucketMs: 60_000, byRequest: false, metric: 'count' },
 		});
 		expect(text('scatter-summary')).toContain('4 events');
+	});
+});
+
+describe('EventScatterPanel: the puppy companion', () => {
+	afterEach(() => {
+		puppy.shown = false;
+		puppy.pulse = 0;
+	});
+
+	it('gives the puppy a wag each time the chart folds or unfolds', async () => {
+		puppy.shown = true;
+		render(EventScatterPanel, { props: props() });
+		await fireEvent.click(screen.getByTestId('scatter-toggle'));
+		await fireEvent.click(screen.getByTestId('scatter-toggle'));
+		expect(puppy.pulse).toBe(2);
 	});
 });

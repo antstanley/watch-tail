@@ -33,6 +33,11 @@ Daylight, Sand, Mint and Lavender are light palettes. The choice is remembered i
 Need the interface larger? Set **Text size** in the header to Large or Extra large. It scales the
 whole UI, including the log view, and is remembered in this browser.
 
+Want company? Press **Puppy** in the header to bring out a Labrador puppy in the bottom-right
+corner. It wags its tail whenever data loads and whenever you fold or unfold a section, and gets
+excited when you click it. Drag it (or focus it and use the arrow keys) to move it to another
+corner; the corner is remembered in this browser. Press **Puppy** again to send it away.
+
 ## What you get
 
 - **Live tail and historic scans.** Follow new events or select a preset (15 minutes to 5 days) or
