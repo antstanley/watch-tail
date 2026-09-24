@@ -12,6 +12,10 @@ Hand the same search to your AI agent over MCP. Uses your existing AWS credentia
 [![license](https://img.shields.io/npm/l/watch-tail)](./LICENSE)
 [![node](https://img.shields.io/node/v/watch-tail)](package.json)
 
+https://github.com/user-attachments/assets/a25c1739-f139-4c3e-bf1f-9e86f4d61898
+
+<sub>The 30-second trailer, drawn with p5.js. [How it's made](https://github.com/antstanley/watch-tail-hype).</sub>
+
 <img src="https://raw.githubusercontent.com/antstanley/watch-tail/v0.10.0/docs/watch-tail-overview.png" alt="watch-tail: an hour of historic logs from two Lambda groups, with the request-duration chart and request grouping" width="1200">
 
 </div>
