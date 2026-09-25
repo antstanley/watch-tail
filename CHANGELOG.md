@@ -1,5 +1,18 @@
 # watch-tail
 
+## 0.10.1
+
+### Patch Changes
+
+- [#38](https://github.com/antstanley/watch-tail/pull/38) [`50e7342`](https://github.com/antstanley/watch-tail/commit/50e7342abc447f5ddd2874f21bb20d41b8547b8c) Thanks [@antstanley](https://github.com/antstanley)! - Add a 30-second manga-style trailer to the top of the README, with a link to the
+  [watch-tail-hype](https://github.com/antstanley/watch-tail-hype) repository that renders it.
+
+- [#40](https://github.com/antstanley/watch-tail/pull/40) [`c664328`](https://github.com/antstanley/watch-tail/commit/c664328045a4e479bc03221344b50d9fc539cfdf) Thanks [@antstanley](https://github.com/antstanley)! - Shrink the npm package from 7.0 MB to 1.7 MB unpacked (1.9 MB to 0.5 MB packed), and the install
+  from about 90 MB to 22 MB. The chart library is no longer compiled into the server build, source
+  maps and pre-compressed `.gz`/`.br` copies no longer ship, and `layerchart` and `@lucide/svelte`
+  are no longer installed as dependencies, since the build already bundles them. A new
+  `pnpm check:package` step keeps the package within a size budget in CI.
+
 ## 0.10.0
 
 ### Minor Changes
