@@ -7,15 +7,27 @@
  * while making up over half of the npm package. This deletes every `.map` file
  * and the `sourceMappingURL` comment that would otherwise point at it.
  *
+ * Only the trailing comment a bundler appends is removed: the same text earlier
+ * in a file could sit inside a string, and removing it would change the code.
+ *
  * Usage:
  *   node scripts/strip-sourcemaps.ts [dir]   # defaults to build/
  */
 import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Drops `//# sourceMappingURL=` lines; returns `null` when there is none. */
-export function stripMappingComment(source: string): string | null {
-	const stripped = source.replace(/^\/\/# sourceMappingURL=.*(?:\r?\n|$)/gm, '');
+/** The trailing mapping comment of a script (`//# ...` or legacy `//@ ...`). */
+const SCRIPT_COMMENT = /(^|\n)\/\/[#@] sourceMappingURL=[^\s'"`]+\s*$/;
+
+/** The trailing mapping comment of a stylesheet (`/*# ... *\/`). */
+const STYLE_COMMENT = /(^|\n)\/\*[#@] sourceMappingURL=[^\s*]+\s*\*\/\s*$/;
+
+/**
+ * Drops the mapping comment at the end of a script or stylesheet, keeping the
+ * newline before it; returns `null` when the file does not end with one.
+ */
+export function stripMappingComment(source: string, style = false): string | null {
+	const stripped = source.replace(style ? STYLE_COMMENT : SCRIPT_COMMENT, '$1');
 	return stripped === source ? null : stripped;
 }
 
@@ -28,8 +40,9 @@ export function stripSourcemaps(dir: string): number {
 		if (entry.name.endsWith('.map')) {
 			rmSync(path);
 			removed++;
-		} else if (/\.[cm]?js$/.test(entry.name)) {
-			const stripped = stripMappingComment(readFileSync(path, 'utf8'));
+		} else if (/\.(?:[cm]?js|css)$/.test(entry.name)) {
+			const style = entry.name.endsWith('.css');
+			const stripped = stripMappingComment(readFileSync(path, 'utf8'), style);
 			if (stripped !== null) writeFileSync(path, stripped);
 		}
 	}
