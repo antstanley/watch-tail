@@ -60,6 +60,9 @@ importers:
       '@types/node':
         specifier: ^22.20.2
         version: 22.20.2
+      es-module-lexer:
+        specifier: ^2.3.2
+        version: 2.3.2
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1

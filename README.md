@@ -279,7 +279,9 @@ from the checkout's `.env.local` do not silently redirect a normal CLI run.
 
 ## Local development
 
-With [floci](https://floci.io) installed:
+Development needs **Node.js 22.18+**, which runs the TypeScript scripts in `scripts/` directly;
+pnpm and npm refuse to install or run scripts on anything older. With [floci](https://floci.io)
+installed:
 
 ```bash
 pnpm install
