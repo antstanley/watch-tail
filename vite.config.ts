@@ -12,7 +12,8 @@ export default defineConfig({
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true,
 			},
-			adapter: adapter(),
+			// The UI is served on localhost, so .gz/.br copies only bloat the package.
+			adapter: adapter({ precompress: false }),
 		}),
 	],
 	test: {

@@ -297,7 +297,7 @@ Use `pnpm dev:aws --profile my-profile` to develop against AWS instead.
 | `pnpm test:cli`             | Built CLI startup and shutdown checks (Python 3 for terminal tests on macOS/Linux) |
 | `pnpm test:ui`              | Browser smoke checks against the running app                                       |
 | `pnpm build` / `pnpm start` | Build and run the production CLI                                                   |
-| `pnpm publish:check`        | Validate package metadata and tarball contents                                     |
+| `pnpm publish:check`        | Validate package metadata, tarball contents, size budget and runtime imports       |
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for internals,
 [CHANGELOG.md](./CHANGELOG.md) for release history, and [RELEASING.md](./RELEASING.md) for the
