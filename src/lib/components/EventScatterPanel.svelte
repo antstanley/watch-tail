@@ -35,8 +35,13 @@
 	/**
 	 * The real loader: a dynamic import, which is what keeps layerchart out of the
 	 * initial bundle. It only runs in the browser, and only once the panel is open.
+	 * The server build gets a stub instead: without it, layerchart and d3 are
+	 * compiled into the server chunks (and shipped in the npm package) for code
+	 * that never runs there.
 	 */
-	const loadChartModule: ChartLoader = () => import('./EventScatter.svelte');
+	const loadChartModule: ChartLoader = import.meta.env.SSR
+		? () => Promise.reject(new Error('the chart is client-only'))
+		: () => import('./EventScatter.svelte');
 
 	type Props = {
 		onSelect?: (point: SeriesPoint) => void;

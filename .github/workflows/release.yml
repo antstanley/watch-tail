@@ -76,6 +76,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm exec oxfmt --check .
       - run: pnpm knip
+      # Size budget, no maps or .gz/.br copies, and only declared runtime imports.
+      - run: pnpm check:package
       # Metadata is validated before the publish job, which never builds or
       # tests: publishing runs nobody's code, and nobody's code runs with the
       # OIDC token.

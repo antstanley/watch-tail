@@ -102,7 +102,7 @@ pnpm changeset status    # what the next version will be
 pnpm verify              # types, tests, lint, format, knip, build
 pnpm test:e2e            # floci integration (needs floci running)
 pnpm test:cli            # the built CLI serves the UI
-pnpm publish:check       # publint + the exact tarball contents
+pnpm publish:check       # publint, the exact tarball contents, size budget, imports
 ```
 
 ## Manual publishing (break glass)
